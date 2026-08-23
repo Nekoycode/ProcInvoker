@@ -148,6 +148,8 @@ signals:
 
 ```
 CMakeLists.txt            # 顶层，C++17，Qt5::Core Qt5::Test，enable_testing
+README.md                 # 门面文档（英文默认，着陆页式）
+README.zh-CN.md           # README 中文镜像，两者须同步维护
 SPEC.md
 include/procinvoker/ProcInvoker.h
 src/ProcInvoker.cpp
