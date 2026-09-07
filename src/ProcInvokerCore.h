@@ -24,7 +24,9 @@ public:
 
     void setProgram(const QString &program, const QStringList &args);
     void setWorkingDirectory(const QString &dir) { m_workingDir = dir; }
-    void setMarker(const QString &marker); // 即时同步到 framer，对在途命令之后的命令生效
+    // 运行期修改与 promptMode 闩锁对称：在途命令期间只记录新值，
+    // 推迟到命令结束（finishCurrent）或进程复位路径（startProcess）再应用到 framer
+    void setMarker(const QString &marker);
     void setProbeCommand(const QString &probe) { m_probeCommand = probe; }
     void setCodec(const QByteArray &name);
     void setRestartDelayMs(int ms) { m_restartDelayMs = ms; }
@@ -32,7 +34,7 @@ public:
     // 运行期切换仅影响后续命令，在途命令按启动时闩锁的模式结束。
     void setPromptPattern(const QString &pattern);
 
-    void startProcess();
+    void startProcess(bool manual = false); // manual=true 为人工 start()：清零自动重启计数
     void stopAll();
     void shutdown();
     void enqueue(qint64 id, const ProcInvoker::Command &cmd, QThread *cbThread);
@@ -57,6 +59,7 @@ private:
     };
 
     void ensureCodec();
+    void applyPendingCodec(); // 应用被闩锁推迟的编码重建（codec dirty 时）
     void ensureProcess();
     bool promptMode() const { return !m_promptPattern.isEmpty(); }
     void tryStartNext();
@@ -73,7 +76,7 @@ private:
     void onReadyRead();
     void onReadyReadStderr();
     void onStarted();
-    void onFinished(int exitCode);
+    void onFinished(int exitCode, QProcess::ExitStatus status);
     void onProcessError(QProcess::ProcessError error);
 
     QString m_program;
@@ -84,6 +87,7 @@ private:
     QString m_probeCommand = QStringLiteral("puts \"%1\"");
     QByteArray m_codecName = "UTF-8";
     QTextCodec *m_codec = nullptr;
+    bool m_codecDirty = false; // 在途命令期间收到 setCodec：推迟到命令结束再重建
     int m_restartDelayMs = 1000;
 
     QProcess *m_process = nullptr;
@@ -98,6 +102,7 @@ private:
     bool m_stopping = false;
     bool m_deadHandled = false;
     bool m_restarting = false;
+    int m_restartCount = 0; // 连续自动重启次数；命令 Ok 或人工 start()/stop() 后清零
     // 提示符模式：启动后在核心层见到首个提示符前不转 Idle、不推进队列（吸收启动提示符）
     bool m_awaitingFirstPrompt = false;
     ProcInvoker::State m_state = ProcInvoker::Stopped;

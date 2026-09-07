@@ -52,5 +52,12 @@ PromptFramer::FeedResult PromptFramer::feed(const QByteArray &data)
             m_buffer.clear();
         }
     }
+    // 尾段上限：无提示符匹配且超过 1MB 时冲刷为帧并清空，
+    // 防对端永不换行/永不匹配导致内存膨胀与反复全量匹配的 O(n²)
+    static constexpr int kMaxTailBuffer = 1024 * 1024;
+    if (m_buffer.size() > kMaxTailBuffer) {
+        out.frames.append(m_buffer);
+        m_buffer.clear();
+    }
     return out;
 }

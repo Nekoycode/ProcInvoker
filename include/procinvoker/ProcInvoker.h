@@ -17,6 +17,12 @@ class ProcInvokerCore;
 // Qt5 子进程命令调用器：stdin 进命令、stdout 出消息，注入分隔标记判定命令结束。
 // 公开入口线程安全：registerCommand()/cancelCommand() 可从任意线程调用，
 // 回调投递回注册命令时调用方所在线程（可用 Command::callbackThread 显式覆盖）。
+//
+// 使用契约：
+//  - 配置 setter（setProgram 等）应在 start() 前、且与 start()/stop()/析构在同一
+//    线程调用（内部成员非原子，跨线程并发配置是数据竞争）；
+//  - 析构须在没有并发 registerCommand() 的时点进行：析构进行中投递的注册会被
+//    静默丢弃。
 class ProcInvoker : public QObject
 {
     Q_OBJECT
@@ -66,12 +72,15 @@ public:
     void setProgram(const QString &program, const QStringList &args = {});
     void setWorkingDirectory(const QString &dir);
     void setMarker(const QString &marker);       // 默认 "\x1dDONE\x1d"；实际期望标记为 marker+commandId
+                                                 // 运行期修改对在途命令之后的命令生效（闩锁）
     // 默认 "puts \"%1\""；%1 会被替换为完整期望标记（marker+commandId），
     // 探针须让子进程原样打印该完整标记
     void setProbeCommand(const QString &probe);
     // 默认 "UTF-8"；需为 ASCII 兼容、单字节换行的编码（不支持 UTF-16 等有状态编码）
+    // 运行期修改对在途命令之后的命令生效（闩锁，同 setMarker）
     void setCodec(const QByteArray &codecName);
-    void setRestartDelayMs(int ms);              // 默认 1000，-1 不自动重启
+    void setRestartDelayMs(int ms);              // 默认 1000，-1 不自动重启；
+                                                 // 连续自动重启 5 次仍失败则停留 Faulted
 
     // 提示符分帧模式（opt-in 兜底，用于无法注入标记的封闭 REPL）。
     // 设置后切换到提示符模式：不注入探针（marker/probeCommand 不生效），以输出流
@@ -90,7 +99,8 @@ public:
     void clearPromptPattern();
 
     bool start();
-    // 在途+排队命令逐条收到 Cancelled 后终止进程；工作线程内最多阻塞约 1s 等待进程退出
+    // 在途+排队命令逐条收到 Cancelled 后终止进程：先关闭 stdin 等进程自行退出
+    // （500ms），未退出再强杀；工作线程内最多阻塞约 1.5s
     void stop();
     State state() const;
 

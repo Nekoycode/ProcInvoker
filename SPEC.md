@@ -1,5 +1,7 @@
 # ProcInvoker 设计规格
 
+版本 1.0.0（发布历史见 CHANGELOG.md）。
+
 Qt 5.15.2 / C++17，跨平台（Linux / Windows / Kylin）。基于 QProcess 的子进程命令调用器，
 支持 Tcl 交互式程序及其他一切"stdin 进命令、stdout 出消息"的协议。
 
@@ -24,6 +26,8 @@ ProcInvoker（公开 API，线程安全入口，QObject）
    该命令；不匹配的标记（超时命令的陈旧标记等）一律丢弃，不会错位结束后续命令。
    - `marker`（默认 `"\x1dDONE\x1d"`）与 `probeCommand`（模板，默认 Tcl 形式
      `puts "%1"`，`%1` 为完整期望标记）均可配置，以适配非 Tcl 程序。
+     运行期修改 `marker`/`codec` 与提示符模式闩锁对称：在途命令期间只记录新值，
+     命令结束（或进程复位）后才应用到 framer，在途命令按旧值结束。
    - FireAndForget 命令不注入探针、不等待输出。
    - 协议固有限制：超时命令迟到的输出行（非标记）可能被归入下一条命令的
      onMessage 中间消息；onResult 最终归属不受影响。
@@ -33,6 +37,8 @@ ProcInvoker（公开 API，线程安全入口，QObject）
      启动期提示符由核心层吸收（见首个提示符前不转 Idle、不推进队列）；无在途命令时的
      提示符一律丢弃。无效正则不进入提示符模式（告警并保持原模式）；在途命令按启动时
      闩锁的分帧模式结束，运行期切换仅影响后续命令；假定被调程序无 stdin 回显。
+     提示符尾段设 1MB 上限：无匹配时冲刷为帧并清空，防内存 DoS 与反复全量匹配的
+     O(n²)。
      已知限制（原理性）：FireAndForget 产生的
      提示符会误归属给随后在途命令、超时命令的陈旧提示符无法唯一化会提前结束当前命令、
      输出尾部恰好匹配正则会误判——文档（README 与头文件注释）明确警告。
@@ -63,20 +69,29 @@ ProcInvoker（公开 API，线程安全入口，QObject）
      触发时 queued 投递回该线程。UI 线程注册的回调就在 UI 线程执行。
    - 跨线程传递的类型需 Q_DECLARE_METATYPE + qRegisterMetaType。
 
-5. **失败处理：错误回调 + 清空 + 自动重启。**
+5. **失败处理：错误回调 + 清空 + 有上限的自动重启。**
    - 子进程运行期异常退出：在途命令与所有排队命令逐条收到 `ProcessDied` 错误结果
-     （onResult 照常触发，不无声丢失），队列清空。
+     （onResult 照常触发，不无声丢失），队列清空；在途命令的结果带已收到的部分输出
+     （CollectAll 聚合 join，否则最后一条）。`processDied` 的 reason 带 exitCode 与
+     ExitStatus（`process exited, exitCode=N, status=NormalExit|CrashExit`）。
    - `FailedToStart`（程序路径无效等）**不自动重启**：直接进 Faulted、发 processDied，
      等人工干预，避免无限重启洪泛。
    - 运行期崩溃按可配置延迟自动重启（默认 1000ms，-1 表示不自动重启），
-     重启成功发 `restarted()`。
-   - `stop()` 时对在途+排队命令逐条发 `Cancelled` 错误结果，再终止进程。
+     重启成功发 `restarted()`。**连续自动重启上限 5 次**（应对"能启动但启动即退出"
+     的程序）：超限后停留 Faulted；计数在命令成功完成（Ok）或人工 start()/stop()
+     后清零。
+   - 入队守卫：进程 Faulted 且无重启计划（FailedToStart 或重启达上限）时，新注册
+     命令立即收到 `ProcessDied`，不无声悬死；Stopped（未启动/已停止）时入队滞留是
+     有意设计（register-before-start），仅告警提示。
+   - `stop()` 时对在途+排队命令逐条发 `Cancelled` 错误结果，再终止进程：先关闭
+     stdin 等进程自行退出（500ms），未退出再强杀（kill + 1000ms）。
    - 单条命令超时：该命令以 `Timeout` 回调并出队，**不杀进程**；
      标记唯一化保证其迟到的陈旧标记不会错位影响后续命令，队列立即推进。
 
 6. **其他。**
    - stdin/stdout 编码默认 UTF-8，可配置（Qt5 用 QTextCodec）。
-   - stderr 通过 signal `stderrReceived(QString)` 转发，不参与命令归属。
+   - stderr 通过 signal `stderrReceived(QString)` 转发，不参与命令归属；行缓冲设
+     64KB 上限，无换行残余超限即强制冲刷，防内存 DoS。
    - stdin 写入异步进行，不阻塞事件循环。
    - Kylin 与 Linux 行为一致，无特殊分支；不得使用任何平台特定 API。
 
@@ -126,6 +141,8 @@ signals:
 - `nop`：不产生任何输出（避免无归属回显串入下一条命令）
 - `slow <ms> <text>`：延迟 ms 后打印（用于超时测试）
 - `crash`：立即 exit(1)（用于进程死亡/重启测试）
+- `exit0`：立即 exit(0)；`--exit0` 启动参数则启动即 exit(0)（用于重启上限测试）
+- `printcrash <text>`：打印一行，稍候 exit(1)（用于死亡时部分输出保留测试）
 - 其他输入：原样回显一行
 - 以 `--prompt <str>` 启动时进入提示符模式：启动即打印一次提示符（不换行），
   之后每处理完一行命令再打印一次提示符
@@ -148,7 +165,11 @@ signals:
 ## 工程结构
 
 ```
-CMakeLists.txt            # 顶层，C++17，Qt5::Core Qt5::Test，enable_testing
+CMakeLists.txt            # 顶层，C++17，Qt5::Core（Qt5::Test 下沉到 tests/），
+                          # install/export（ProcInvokerConfig.cmake + SameMajorVersion），
+                          # 子项目引入时 tests/examples 默认关闭
+cmake/ProcInvokerConfig.cmake.in  # 包配置模板（find_dependency(Qt5 Core)）
+CHANGELOG.md              # 发布历史（Keep a Changelog）
 .github/workflows/ci.yml  # CI（仅手动触发 workflow_dispatch）：Linux + Windows 构建与 ctest
 LICENSE                   # MIT
 README.md                 # 门面文档（英文默认，着陆页式）

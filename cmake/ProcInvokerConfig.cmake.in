@@ -1,0 +1,6 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Qt5 5.15 COMPONENTS Core)
+
+include("${CMAKE_CURRENT_LIST_DIR}/ProcInvokerTargets.cmake")

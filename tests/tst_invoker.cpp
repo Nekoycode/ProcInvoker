@@ -102,6 +102,13 @@ private slots:
     void callbackThreadNotRunningDropsCallback();
     void unknownCodecFallsBackToUtf8();
     void stopRegisterStartCycle();
+    void exit0RestartFloodCapped();
+    void enqueueWhileFaultedFailsImmediately();
+    void enqueueWhileStoppedWarnsButQueues();
+    void setMarkerMidFlightDeferred();
+    void setCodecMidFlightDeferred();
+    void processDiedKeepsPartialOutput();
+    void stderrLongLineCap();
 
 private:
     static void startAndWaitIdle(ProcInvoker *inv)
@@ -940,6 +947,174 @@ void TestInvoker::stopRegisterStartCycle()
     QTRY_COMPARE_WITH_TIMEOUT(results.size(), 1, 5000);
     QCOMPARE(results[0].status, ProcInvoker::Status::Ok);
     QCOMPARE(results[0].text, QStringLiteral("again"));
+}
+
+void TestInvoker::exit0RestartFloodCapped()
+{
+    // D2 回归：能启动但启动即退出的程序不得无限重启洪泛——连续自动重启 5 次后
+    // 停留 Faulted（初次死亡 + 5 次重启后各死一次 = 6 次 processDied）
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH), {QStringLiteral("--exit0")});
+    inv.setRestartDelayMs(100);
+
+    QSignalSpy diedSpy(&inv, &ProcInvoker::processDied);
+    QSignalSpy restartedSpy(&inv, &ProcInvoker::restarted);
+
+    QVERIFY(inv.start());
+
+    QTRY_COMPARE_WITH_TIMEOUT(diedSpy.count(), 6, 10000);
+    QCOMPARE(restartedSpy.count(), 5);
+    QCOMPARE(inv.state(), ProcInvoker::Faulted);
+    // ExitStatus 进入 reason：正常退出与崩溃可区分
+    QVERIFY(diedSpy.first()[0].toString().contains(QStringLiteral("status=NormalExit")));
+
+    QTest::qWait(300); // 超过两个重启周期，确认重启已停止
+    QCOMPARE(diedSpy.count(), 6);
+    QCOMPARE(restartedSpy.count(), 5);
+}
+
+void TestInvoker::enqueueWhileFaultedFailsImmediately()
+{
+    // D3 回归：FailedToStart 后无重启计划，入队命令立即收到 ProcessDied，不悬死
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral("/nonexistent/definitely-missing-procinvoker-binary"));
+    QVERIFY(inv.start());
+    QTRY_COMPARE_WITH_TIMEOUT(inv.state(), ProcInvoker::Faulted, 5000);
+
+    QList<Result> results;
+    inv.registerCommand(makeCmd(QStringLiteral("print x"),
+                                [&](const Result &r) { results.append(r); }));
+    QTRY_COMPARE_WITH_TIMEOUT(results.size(), 1, 2000);
+    QCOMPARE(results[0].status, ProcInvoker::Status::ProcessDied);
+    QCOMPARE(inv.state(), ProcInvoker::Faulted);
+}
+
+void TestInvoker::enqueueWhileStoppedWarnsButQueues()
+{
+    // D3：Stopped 未启动时入队——告警提示，但命令滞留排队是有意设计
+    // （register-before-start 合法），start() 后正常执行
+    WarningCapture cap;
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+
+    QList<Result> results;
+    inv.registerCommand(makeCmd(QStringLiteral("print x"),
+                                [&](const Result &r) { results.append(r); }));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        WarningCapture::contains(QStringLiteral("process not running")), 2000);
+    QCOMPARE(results.size(), 0); // 滞留排队，不失败
+
+    QVERIFY(inv.start());
+    QTRY_COMPARE_WITH_TIMEOUT(results.size(), 1, 5000);
+    QCOMPARE(results[0].status, ProcInvoker::Status::Ok);
+    QCOMPARE(results[0].text, QStringLiteral("x"));
+}
+
+void TestInvoker::setMarkerMidFlightDeferred()
+{
+    // D1 回归：在途命令期间 setMarker 只记录新值，在途命令仍按旧标记结束；
+    // 下一条命令起用新标记（与 promptMode 闩锁对称）
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    startAndWaitIdle(&inv);
+
+    QList<Result> results1;
+    inv.registerCommand(makeCmd(QStringLiteral("slow 300 x"),
+                                [&](const Result &r) { results1.append(r); },
+                                {}, ProcInvoker::ExpectResult, 2000));
+    inv.setMarker(QStringLiteral("@@NEWMARK@@")); // queued 于命令之后：命令已按旧标记启动
+
+    QTRY_COMPARE_WITH_TIMEOUT(results1.size(), 1, 5000);
+    QCOMPARE(results1[0].status, ProcInvoker::Status::Ok); // 若即时替换则旧标记永不匹配 → Timeout
+    QCOMPARE(results1[0].text, QStringLiteral("x"));
+
+    QList<Result> results2;
+    inv.registerCommand(makeCmd(QStringLiteral("print y"),
+                                [&](const Result &r) { results2.append(r); }));
+    QTRY_COMPARE_WITH_TIMEOUT(results2.size(), 1, 5000);
+    QCOMPARE(results2[0].status, ProcInvoker::Status::Ok); // 新标记正常往返
+    QCOMPARE(results2[0].text, QStringLiteral("y"));
+}
+
+void TestInvoker::setCodecMidFlightDeferred()
+{
+    // D1 回归：在途命令期间 setCodec 推迟到命令结束再重建；在途命令仍按旧编码解码。
+    // 非 ASCII 内容在 UTF-8 与 Latin-1 下解码结果不同，可区分是否闩锁
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    startAndWaitIdle(&inv);
+
+    const QString nonAscii = QString::fromUtf8("h\xc3\xa9llo"); // "héllo"
+    QList<Result> results1;
+    inv.registerCommand(makeCmd(QStringLiteral("print ") + nonAscii,
+                                [&](const Result &r) { results1.append(r); },
+                                {}, ProcInvoker::ExpectResult, 2000));
+    inv.setCodec("ISO-8859-1"); // queued 于命令之后：命令已按 UTF-8 启动
+
+    QTRY_COMPARE_WITH_TIMEOUT(results1.size(), 1, 5000);
+    QCOMPARE(results1[0].status, ProcInvoker::Status::Ok);
+    QCOMPARE(results1[0].text, nonAscii); // 若即时重建则按 Latin-1 解码成乱码
+
+    QList<Result> results2;
+    inv.registerCommand(makeCmd(QStringLiteral("print y"),
+                                [&](const Result &r) { results2.append(r); }));
+    QTRY_COMPARE_WITH_TIMEOUT(results2.size(), 1, 5000);
+    QCOMPARE(results2[0].status, ProcInvoker::Status::Ok); // 新编码下 ASCII 内容正常往返
+    QCOMPARE(results2[0].text, QStringLiteral("y"));
+}
+
+void TestInvoker::processDiedKeepsPartialOutput()
+{
+    // P1：进程死亡时，在途 CollectAll 命令的 ProcessDied 结果带已收集的部分输出；
+    // 顺带断言 reason 带 exitCode 与 ExitStatus
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    inv.setRestartDelayMs(-1);
+    startAndWaitIdle(&inv);
+
+    QSignalSpy diedSpy(&inv, &ProcInvoker::processDied);
+    QList<Result> results;
+    // printcrash：打印一行后退出，探针标记永远等不到 → 进程死亡时已有部分输出
+    inv.registerCommand(makeCmd(QStringLiteral("printcrash p1"),
+                                [&](const Result &r) { results.append(r); }, {},
+                                ProcInvoker::ExpectResult | ProcInvoker::CollectAll));
+
+    QTRY_COMPARE_WITH_TIMEOUT(results.size(), 1, 5000);
+    QCOMPARE(results[0].status, ProcInvoker::Status::ProcessDied);
+    QCOMPARE(results[0].text, QStringLiteral("p1")); // 部分输出不丢弃
+    QTRY_VERIFY_WITH_TIMEOUT(diedSpy.count() >= 1, 2000);
+    // reason 带 exitCode 与 ExitStatus（exit(1) 属正常退出；CrashExit 仅用于信号死亡）
+    QVERIFY(diedSpy.first()[0].toString().contains(
+        QStringLiteral("exitCode=1, status=NormalExit")));
+}
+
+void TestInvoker::stderrLongLineCap()
+{
+    // stderr 无换行长行超过 64KB：强制冲刷为一条 stderrLine，防内存膨胀。
+    // 首条冲刷在缓冲首次越限时触发（>64KB 且 ≤ 总量），残余无换行则留在缓冲
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    startAndWaitIdle(&inv);
+
+    QSignalSpy stderrSpy(&inv, &ProcInvoker::stderrReceived);
+    const QString big(100000, QLatin1Char('a'));
+    inv.registerCommand(makeCmd(QStringLiteral("errnonl ") + big, {}, {},
+                                ProcInvoker::FireAndForget));
+
+    QTRY_VERIFY_WITH_TIMEOUT(stderrSpy.count() >= 1, 5000);
+    const int flushed = stderrSpy[0][0].toString().size();
+    QVERIFY(flushed > 64 * 1024);
+    QVERIFY(flushed <= big.size());
 }
 
 QTEST_GUILESS_MAIN(TestInvoker)

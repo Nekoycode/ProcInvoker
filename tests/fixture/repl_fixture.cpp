@@ -9,9 +9,12 @@
 //   errnonl <text>        打印到 stderr，不换行（测试死亡时残余冲刷）
 //   nop                   不产生任何输出
 //   crash                 立即 exit(1)
+//   exit0                 立即 exit(0)（测试启动即退出的重启上限）
+//   printcrash <text>     打印一行，稍候 exit(1)（测试死亡时保留部分输出）
 //   其他输入              原样回显一行
 // 提示符模式：以 `--prompt <str>` 启动时，启动即打印一次提示符（不换行），
 // 之后每处理完一行命令再打印一次提示符。
+// 以 `--exit0` 启动时立即 exit(0)（模拟"能启动但启动即退出"的程序）。
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -42,6 +45,12 @@ int main(int argc, char **argv)
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::strcmp(argv[i], "--prompt") == 0)
             g_prompt = argv[i + 1];
+    }
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--exit0") == 0) {
+            std::fflush(stdout);
+            std::exit(0);
+        }
     }
     printPrompt(); // 启动提示符
 
@@ -82,6 +91,15 @@ int main(int argc, char **argv)
         } else if (line == "nop") {
             // 无输出
         } else if (line == "crash") {
+            std::fflush(stdout);
+            std::exit(1);
+        } else if (line == "exit0") {
+            std::fflush(stdout);
+            std::exit(0);
+        } else if (line.compare(0, 11, "printcrash ") == 0) {
+            outLine(line.substr(11));
+            // 输出与死亡拉开时间窗，确保父进程先读到输出再收到 finished
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
             std::fflush(stdout);
             std::exit(1);
         } else {

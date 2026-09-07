@@ -105,13 +105,15 @@ inv->setPromptPattern("% ");   // opt-in; see docs for its three inherent limita
 | Program, args, working directory | `setProgram()` / `setWorkingDirectory()` |
 | Protocol adaptation | `setMarker()` / `setProbeCommand()` / `setPromptPattern()` |
 | Encoding (ASCII-compatible codecs) | `setCodec()` — default UTF-8 |
-| Crash auto-restart | `setRestartDelayMs()` — default 1000 ms, `-1` disables |
+| Crash auto-restart | `setRestartDelayMs()` — default 1000 ms, `-1` disables; gives up after 5 consecutive restarts and stays `Faulted` |
 | Fire-and-forget commands | `CommandFlag::FireAndForget` |
 | Aggregated vs streaming results | `CommandFlag::CollectAll`, `onMessage` |
 | Per-command timeout (never kills the process) | `Command::timeoutMs` — default 30 s |
 | Cancel queued commands | `cancelCommand(id)` |
-| Graceful shutdown with `Cancelled` callbacks | `stop()` |
+| Graceful shutdown with `Cancelled` callbacks | `stop()` — closes stdin first so the REPL exits on EOF, kills only as fallback |
 | Global monitoring | `commandFinished` / `messageReceived` / `stderrReceived` / `processDied` / `restarted` / `stateChanged` |
+
+Failure semantics worth knowing: a dying process hands the in-flight command its partial output collected so far (aggregated for `CollectAll`, last line otherwise) with its `ProcessDied` result, and the `processDied` reason carries exit code and exit status (`NormalExit` / `CrashExit`). Commands registered while `Faulted` with no restart pending fail immediately with `ProcessDied` rather than hanging; while `Stopped` they intentionally queue (with a one-time warning) until `start()`. Runtime `setMarker()` / `setCodec()` / `setPromptPattern()` changes are latched: the in-flight command finishes under its original settings, new values apply from the next command on.
 
 ## Building & Testing
 
@@ -123,7 +125,22 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The suite needs no installed Tcl: a purpose-built line-protocol fixture child process drives 65 unit & integration tests (framer edge cases, ordering, streaming, timeouts, crash/restart, callback threading, prompt mode). Examples need `tclsh`; the embedded-host example additionally needs the Tcl dev package (`apt install tcl tcl-dev`).
+## Installing & Consuming Downstream
+
+```bash
+cmake --install build          # or: DESTDIR=/path/to/staging cmake --install build
+```
+
+Then in your `CMakeLists.txt`:
+
+```cmake
+find_package(ProcInvoker 1.0 REQUIRED)
+target_link_libraries(app PRIVATE ProcInvoker::procinvoker)
+```
+
+The exported config pulls in `Qt5::Core` via `find_dependency`; version compatibility follows SemVer (`SameMajorVersion`). When ProcInvoker is vendored via `add_subdirectory`, tests and examples are off by default (`PROCINVOKER_BUILD_TESTS` / `PROCINVOKER_BUILD_EXAMPLES`) — library consumers don't need Qt5Test or Tcl.
+
+The suite needs no installed Tcl: a purpose-built line-protocol fixture child process drives 73 unit & integration tests (framer edge cases, ordering, streaming, timeouts, crash/restart, callback threading, prompt mode). Examples need `tclsh`; the embedded-host example additionally needs the Tcl dev package (`apt install tcl tcl-dev`).
 
 ## Embedding Tcl? Three Rules
 
@@ -148,9 +165,11 @@ A host that calls `Tcl_Main` with no script argument works out of the box — it
 .github/workflows/ci.yml          # manual-trigger CI: Linux + Windows build & test
 include/procinvoker/ProcInvoker.h   # public API
 src/                                # ProcInvoker entry · ProcInvokerCore · MarkerFramer · PromptFramer
-tests/                              # fixture child process · 65 unit & integration tests (ctest)
+cmake/ProcInvokerConfig.cmake.in    # package config template (install/export)
+tests/                              # fixture child process · 73 unit & integration tests (ctest)
 examples/                           # calc.tcl · calc_procs.tcl · embedded_host.c · tcl_demo.cpp
 SPEC.md                             # design contract (pinned decisions, evolution directions)
+CHANGELOG.md                        # release history (Keep a Changelog)
 ```
 
 ## Contributing

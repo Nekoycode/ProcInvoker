@@ -1,3 +1,6 @@
+# Test 组件仅测试需要，下沉到此处（库消费者不应被迫安装 Qt5Test）
+find_package(Qt5 5.15 REQUIRED COMPONENTS Test)
+
 add_executable(repl_fixture fixture/repl_fixture.cpp)
 
 add_executable(tst_framer tst_framer.cpp)

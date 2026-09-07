@@ -105,13 +105,15 @@ inv->setPromptPattern("% ");   // opt-in；三条原理性限制见文档
 | 程序、参数、工作目录 | `setProgram()` / `setWorkingDirectory()` |
 | 协议适配 | `setMarker()` / `setProbeCommand()` / `setPromptPattern()` |
 | 编码（ASCII 兼容编码） | `setCodec()`——默认 UTF-8 |
-| 崩溃自动重启 | `setRestartDelayMs()`——默认 1000ms，-1 关闭 |
+| 崩溃自动重启 | `setRestartDelayMs()`——默认 1000ms，-1 关闭；连续 5 次重启仍失败则停留 Faulted |
 | 即发即弃命令 | `CommandFlag::FireAndForget` |
 | 聚合 vs 流式结果 | `CommandFlag::CollectAll`、`onMessage` |
 | 单命令超时（不杀进程） | `Command::timeoutMs`——默认 30s |
 | 取消排队命令 | `cancelCommand(id)` |
-| 优雅停止（逐条 `Cancelled` 回调） | `stop()` |
+| 优雅停止（逐条 `Cancelled` 回调） | `stop()`——先关闭 stdin 让 REPL 读到 EOF 自然退出，未退出再强杀 |
 | 全局监控 | `commandFinished` / `messageReceived` / `stderrReceived` / `processDied` / `restarted` / `stateChanged` |
+
+值得了解的失败语义：进程死亡时，在途命令的 `ProcessDied` 结果带已收到的部分输出（CollectAll 为聚合，否则为最后一条），`processDied` 的 reason 带 exitCode 与 ExitStatus（`NormalExit` / `CrashExit`）。Faulted 且无重启计划时注册的命令立即收到 `ProcessDied`，不会悬死；Stopped 时注册则有意滞留排队（告警一次）直到 `start()`。运行期 `setMarker()` / `setCodec()` / `setPromptPattern()` 修改均为闩锁式：在途命令按原配置结束，新值从下一条命令起生效。
 
 ## 构建与测试
 
@@ -123,7 +125,22 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-测试套件不依赖已安装的 Tcl：自带的行协议 fixture 子进程驱动 65 个单元与集成测试（分帧边界、顺序归属、流式、超时、崩溃重启、回调线程、提示符模式）。示例需要 `tclsh`；嵌入式宿主示例另需 Tcl 开发包（`apt install tcl tcl-dev`）。
+## 安装与下游消费
+
+```bash
+cmake --install build          # 或：DESTDIR=/path/to/staging cmake --install build
+```
+
+然后在你的 `CMakeLists.txt` 中：
+
+```cmake
+find_package(ProcInvoker 1.0 REQUIRED)
+target_link_libraries(app PRIVATE ProcInvoker::procinvoker)
+```
+
+导出的 config 经 `find_dependency` 自动引入 `Qt5::Core`；版本兼容遵循 SemVer（`SameMajorVersion`）。以 `add_subdirectory` 方式引入时，tests 与 examples 默认不构建（`PROCINVOKER_BUILD_TESTS` / `PROCINVOKER_BUILD_EXAMPLES`）——库消费者无需安装 Qt5Test 或 Tcl。
+
+测试套件不依赖已安装的 Tcl：自带的行协议 fixture 子进程驱动 73 个单元与集成测试（分帧边界、顺序归属、流式、超时、崩溃重启、回调线程、提示符模式）。示例需要 `tclsh`；嵌入式宿主示例另需 Tcl 开发包（`apt install tcl tcl-dev`）。
 
 ## 嵌入 Tcl？三条规则
 
@@ -148,9 +165,11 @@ ctest --test-dir build --output-on-failure
 .github/workflows/ci.yml          # 手动触发 CI：Linux + Windows 构建与测试
 include/procinvoker/ProcInvoker.h   # 公开 API
 src/                                # ProcInvoker 入口 · ProcInvokerCore · MarkerFramer · PromptFramer
-tests/                              # fixture 子进程 · 65 个单元与集成测试（ctest）
+cmake/ProcInvokerConfig.cmake.in    # 包配置模板（install/export）
+tests/                              # fixture 子进程 · 73 个单元与集成测试（ctest）
 examples/                           # calc.tcl · calc_procs.tcl · embedded_host.c · tcl_demo.cpp
 SPEC.md                             # 设计契约（定稿决策、演进方向）
+CHANGELOG.md                        # 发布历史（Keep a Changelog）
 ```
 
 ## 贡献

@@ -4,6 +4,13 @@
 #include <QTextCodec>
 #include <QTimer>
 
+namespace {
+// 连续自动重启上限：启动即退出的程序按固定周期重启 kMaxAutoRestarts 次后停留 Faulted
+constexpr int kMaxAutoRestarts = 5;
+// stderr 行缓冲上限：无换行残余超过 64KB 强制冲刷，防内存 DoS
+constexpr int kMaxStderrBuffer = 64 * 1024;
+} // namespace
+
 ProcInvokerCore::ProcInvokerCore(QObject *parent)
     : QObject(parent)
 {
@@ -25,8 +32,9 @@ void ProcInvokerCore::setProgram(const QString &program, const QStringList &args
 void ProcInvokerCore::setMarker(const QString &marker)
 {
     m_marker = marker;
+    if (m_hasCurrent)
+        return; // 在途命令的期望标记按旧值固定：推迟到 finishCurrent 再应用到 framer
     ensureCodec();
-    // 即时同步到 framer；在途命令的期望标记已在启动时固定，不受影响
     m_framer.setMarker(m_codec->fromUnicode(m_marker));
 }
 
@@ -53,7 +61,20 @@ void ProcInvokerCore::setPromptPattern(const QString &pattern)
 void ProcInvokerCore::setCodec(const QByteArray &name)
 {
     m_codecName = name;
+    if (m_hasCurrent) {
+        m_codecDirty = true; // 在途命令按旧编码收发：推迟到命令结束再重建
+        return;
+    }
     m_codec = nullptr; // 强制按新名称重建
+    ensureCodec();
+}
+
+void ProcInvokerCore::applyPendingCodec()
+{
+    if (!m_codecDirty)
+        return;
+    m_codecDirty = false;
+    m_codec = nullptr;
     ensureCodec();
 }
 
@@ -81,18 +102,21 @@ void ProcInvokerCore::ensureProcess()
     connect(m_process, &QProcess::readyReadStandardError, this, &ProcInvokerCore::onReadyReadStderr);
     connect(m_process, &QProcess::started, this, &ProcInvokerCore::onStarted);
     connect(m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, [this](int exitCode, QProcess::ExitStatus) { onFinished(exitCode); });
+            this, [this](int exitCode, QProcess::ExitStatus status) { onFinished(exitCode, status); });
     connect(m_process, &QProcess::errorOccurred, this, &ProcInvokerCore::onProcessError);
 }
 
-void ProcInvokerCore::startProcess()
+void ProcInvokerCore::startProcess(bool manual)
 {
     if (m_program.isEmpty())
         return;
     if (m_process && m_process->state() != QProcess::NotRunning)
         return;
+    if (manual)
+        m_restartCount = 0; // 人工 start()：连续自动重启计数清零
     m_stopping = false;
     m_deadHandled = false;
+    applyPendingCodec(); // 死亡/停止路径可能跳过了 finishCurrent 的应用
     ensureProcess();
     m_framer.reset();
     m_framer.setMarker(m_codec->fromUnicode(m_marker));
@@ -107,6 +131,7 @@ void ProcInvokerCore::stopAll()
 {
     m_stopping = true;
     m_restarting = false;
+    m_restartCount = 0; // 人工 stop()：连续自动重启计数清零
     m_cmdTimer->stop();
     m_framer.reset();
     m_promptFramer.reset();
@@ -123,8 +148,13 @@ void ProcInvokerCore::stopAll()
         failEntry(m_pending.dequeue(), ProcInvoker::Status::Cancelled);
 
     if (m_process && m_process->state() != QProcess::NotRunning) {
-        m_process->kill();
-        m_process->waitForFinished(1000); // kill 是异步的，避免 QProcess 销毁时进程仍在运行
+        // 先关 stdin 让 REPL 读到 EOF 自然退出；超时未退再强杀
+        // （工作线程内最多阻塞约 1.5s：500ms 优雅等待 + 1000ms 强杀等待）
+        m_process->closeWriteChannel();
+        if (!m_process->waitForFinished(500)) {
+            m_process->kill();
+            m_process->waitForFinished(1000); // kill 是异步的，避免 QProcess 销毁时进程仍在运行
+        }
     }
     setState(ProcInvoker::Stopped);
 }
@@ -140,6 +170,15 @@ void ProcInvokerCore::enqueue(qint64 id, const ProcInvoker::Command &cmd, QThrea
     e.id = id;
     e.cmd = cmd;
     e.cbThread = cbThread;
+    if (m_state == ProcInvoker::Faulted && !m_restarting) {
+        // 进程已死且无重启计划（FailedToStart 或连续重启达上限）：立即失败，不无声悬死
+        failEntry(e, ProcInvoker::Status::ProcessDied);
+        return;
+    }
+    if (m_state == ProcInvoker::Stopped && m_pending.isEmpty()) {
+        // 未启动/已停止时滞留排队是有意设计（register-before-start），仅首批告警一次
+        qWarning("ProcInvoker: process not running; command queued until start()");
+    }
     m_pending.enqueue(e);
     tryStartNext();
 }
@@ -279,8 +318,13 @@ void ProcInvokerCore::dispatchResult(const Entry &e, ProcInvoker::Status status,
 void ProcInvokerCore::finishCurrent(ProcInvoker::Status status, const QString &text)
 {
     m_cmdTimer->stop();
+    if (status == ProcInvoker::Status::Ok)
+        m_restartCount = 0; // 命令成功完成：进程健康，连续自动重启计数清零
     // 不变量：命令结束时立即清空期望标记，陈旧标记不会错位结束后续命令
     m_framer.setExpectedMarker(QByteArray());
+    applyPendingCodec();
+    // 应用被闩锁推迟的 setMarker/setCodec（无变更时为重放同值，无副作用）
+    m_framer.setMarker(m_codec->fromUnicode(m_marker));
     dispatchResult(m_current, status, text, false);
     m_hasCurrent = false;
     m_current = Entry();
@@ -298,6 +342,7 @@ void ProcInvokerCore::handleDeath(const QString &reason, bool allowRestart)
     if (m_stopping || m_deadHandled)
         return;
     m_deadHandled = true;
+    m_restarting = false; // 若重启中的进程启动即死（FailedToStart），该重启计划已终结
     m_cmdTimer->stop();
     m_framer.reset();
     m_promptFramer.reset();
@@ -311,9 +356,13 @@ void ProcInvokerCore::handleDeath(const QString &reason, bool allowRestart)
         m_stderrBuffer.clear();
     }
 
-    // 在途命令与所有排队命令逐条收到 ProcessDied，不无声丢失
+    // 在途命令与所有排队命令逐条收到 ProcessDied，不无声丢失；
+    // 在途命令带上已收到的部分输出（text 规则与正常完成一致：聚合 join 或最后一条）
     if (m_hasCurrent) {
-        failEntry(m_current, ProcInvoker::Status::ProcessDied);
+        const QString partial = m_current.cmd.flags.testFlag(ProcInvoker::CollectAll)
+                                    ? m_current.collected.join(QLatin1Char('\n'))
+                                    : m_current.lastLine;
+        dispatchResult(m_current, ProcInvoker::Status::ProcessDied, partial, false);
         m_hasCurrent = false;
         m_current = Entry();
     }
@@ -322,8 +371,11 @@ void ProcInvokerCore::handleDeath(const QString &reason, bool allowRestart)
 
     emit died(reason);
 
-    // FailedToStart 不自动重启（程序路径错误需人工干预），运行期崩溃才重启
-    if (allowRestart && m_restartDelayMs >= 0) {
+    // FailedToStart 不自动重启（程序路径错误需人工干预），运行期崩溃才重启；
+    // 连续自动重启有上限（kMaxAutoRestarts）：启动即退出的程序不会无限重启洪泛，
+    // 超限后停留 Faulted，等人工 start()（计数清零）
+    if (allowRestart && m_restartDelayMs >= 0 && m_restartCount < kMaxAutoRestarts) {
+        ++m_restartCount;
         m_restarting = true;
         QTimer::singleShot(m_restartDelayMs, this, [this] {
             if (!m_stopping)
@@ -344,9 +396,13 @@ void ProcInvokerCore::onStarted()
     tryStartNext();
 }
 
-void ProcInvokerCore::onFinished(int exitCode)
+void ProcInvokerCore::onFinished(int exitCode, QProcess::ExitStatus status)
 {
-    handleDeath(QStringLiteral("process exited, exitCode=%1").arg(exitCode), true);
+    handleDeath(QStringLiteral("process exited, exitCode=%1, status=%2")
+                    .arg(exitCode)
+                    .arg(status == QProcess::NormalExit ? QStringLiteral("NormalExit")
+                                                        : QStringLiteral("CrashExit")),
+                true);
 }
 
 void ProcInvokerCore::onProcessError(QProcess::ProcessError error)
@@ -371,6 +427,12 @@ void ProcInvokerCore::onReadyReadStderr()
         pos = nl + 1;
     }
     m_stderrBuffer = m_stderrBuffer.mid(pos);
+    // 无换行残余超过上限：冲刷为一条并清空，防对端永不换行导致内存膨胀
+    if (m_stderrBuffer.size() > kMaxStderrBuffer) {
+        emit stderrLine(m_codec ? m_codec->toUnicode(m_stderrBuffer)
+                                : QString::fromUtf8(m_stderrBuffer));
+        m_stderrBuffer.clear();
+    }
 }
 
 void ProcInvokerCore::setState(ProcInvoker::State s)

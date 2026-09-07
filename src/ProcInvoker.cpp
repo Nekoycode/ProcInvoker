@@ -113,7 +113,7 @@ bool ProcInvoker::start()
     if (m_program.isEmpty())
         return false;
     ProcInvokerCore *core = m_core;
-    QMetaObject::invokeMethod(core, [core] { core->startProcess(); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(core, [core] { core->startProcess(true); }, Qt::QueuedConnection);
     return true;
 }
 

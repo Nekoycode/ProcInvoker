@@ -19,6 +19,7 @@ private slots:
     void emptyPatternInactive();
     void multiBytePromptStripped();
     void multiBytePromptSplitAcrossFeeds();
+    void tailBufferCapFlushes();
 };
 
 void TestPromptFramer::promptStripped()
@@ -142,6 +143,23 @@ void TestPromptFramer::multiBytePromptSplitAcrossFeeds()
     r = f.feed(QByteArray("\xbb "));
     QVERIFY(r.promptFound);
     QVERIFY(r.frames.isEmpty());
+}
+
+void TestPromptFramer::tailBufferCapFlushes()
+{
+    // 尾段超过 1MB 仍无提示符匹配：冲刷为帧并清空（防内存 DoS 与 O(n²)），
+    // 清空后分帧行为恢复正常
+    PromptFramer f(PROMPT);
+    const QByteArray big(1024 * 1024 + 1, 'a');
+    auto r = f.feed(big);
+    QVERIFY(!r.promptFound);
+    QCOMPARE(r.frames.size(), 1);
+    QCOMPARE(r.frames[0].size(), big.size());
+
+    r = f.feed("ok\n% ");
+    QVERIFY(r.promptFound);
+    QCOMPARE(r.frames.size(), 1);
+    QCOMPARE(r.frames[0], QByteArray("ok"));
 }
 
 QTEST_APPLESS_MAIN(TestPromptFramer)
