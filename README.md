@@ -140,7 +140,7 @@ target_link_libraries(app PRIVATE ProcInvoker::procinvoker)
 
 The exported config pulls in `Qt5::Core` via `find_dependency`; version compatibility follows SemVer (`SameMajorVersion`). When ProcInvoker is vendored via `add_subdirectory`, tests and examples are off by default (`PROCINVOKER_BUILD_TESTS` / `PROCINVOKER_BUILD_EXAMPLES`) — library consumers don't need Qt5Test or Tcl.
 
-The suite needs no installed Tcl: a purpose-built line-protocol fixture child process drives 73 unit & integration tests (framer edge cases, ordering, streaming, timeouts, crash/restart, callback threading, prompt mode). Examples need `tclsh`; the embedded-host example additionally needs the Tcl dev package (`apt install tcl tcl-dev`).
+The suite needs no installed Tcl: a purpose-built line-protocol fixture child process drives 74 unit & integration tests (framer edge cases, ordering, streaming, timeouts, crash/restart, callback threading, prompt mode). Examples need `tclsh`; the embedded-host example additionally needs the Tcl dev package (`apt install tcl tcl-dev`).
 
 ## Embedding Tcl? Three Rules
 
@@ -166,7 +166,7 @@ A host that calls `Tcl_Main` with no script argument works out of the box — it
 include/procinvoker/ProcInvoker.h   # public API
 src/                                # ProcInvoker entry · ProcInvokerCore · MarkerFramer · PromptFramer
 cmake/ProcInvokerConfig.cmake.in    # package config template (install/export)
-tests/                              # fixture child process · 73 unit & integration tests (ctest)
+tests/                              # fixture child process · 74 unit & integration tests (ctest)
 examples/                           # calc.tcl · calc_procs.tcl · embedded_host.c · tcl_demo.cpp
 SPEC.md                             # design contract (pinned decisions, evolution directions)
 CHANGELOG.md                        # release history (Keep a Changelog)

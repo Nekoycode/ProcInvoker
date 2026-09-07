@@ -105,6 +105,7 @@ private slots:
     void exit0RestartFloodCapped();
     void enqueueWhileFaultedFailsImmediately();
     void enqueueWhileStoppedWarnsButQueues();
+    void enqueueRightAfterStartNoWarning();
     void setMarkerMidFlightDeferred();
     void setCodecMidFlightDeferred();
     void processDiedKeepsPartialOutput();
@@ -1115,6 +1116,26 @@ void TestInvoker::stderrLongLineCap()
     const int flushed = stderrSpy[0][0].toString().size();
     QVERIFY(flushed > 64 * 1024);
     QVERIFY(flushed <= big.size());
+}
+
+void TestInvoker::enqueueRightAfterStartNoWarning()
+{
+    // W1 回归：start() 后立即注册（最常见用法）不得误报 "process not running"——
+    // startProcess 已同步让 QProcess 进入 Starting，仅 onStarted/state 滞后
+    WarningCapture cap;
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    QVERIFY(inv.start());
+
+    QList<Result> results;
+    inv.registerCommand(makeCmd(QStringLiteral("print x"),
+                                [&](const Result &r) { results.append(r); }));
+    QTRY_COMPARE_WITH_TIMEOUT(results.size(), 1, 5000);
+    QCOMPARE(results[0].status, ProcInvoker::Status::Ok);
+    QCOMPARE(results[0].text, QStringLiteral("x"));
+    QVERIFY(!WarningCapture::contains(QStringLiteral("process not running")));
 }
 
 QTEST_GUILESS_MAIN(TestInvoker)

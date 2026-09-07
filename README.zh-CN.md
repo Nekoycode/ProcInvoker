@@ -140,7 +140,7 @@ target_link_libraries(app PRIVATE ProcInvoker::procinvoker)
 
 导出的 config 经 `find_dependency` 自动引入 `Qt5::Core`；版本兼容遵循 SemVer（`SameMajorVersion`）。以 `add_subdirectory` 方式引入时，tests 与 examples 默认不构建（`PROCINVOKER_BUILD_TESTS` / `PROCINVOKER_BUILD_EXAMPLES`）——库消费者无需安装 Qt5Test 或 Tcl。
 
-测试套件不依赖已安装的 Tcl：自带的行协议 fixture 子进程驱动 73 个单元与集成测试（分帧边界、顺序归属、流式、超时、崩溃重启、回调线程、提示符模式）。示例需要 `tclsh`；嵌入式宿主示例另需 Tcl 开发包（`apt install tcl tcl-dev`）。
+测试套件不依赖已安装的 Tcl：自带的行协议 fixture 子进程驱动 74 个单元与集成测试（分帧边界、顺序归属、流式、超时、崩溃重启、回调线程、提示符模式）。示例需要 `tclsh`；嵌入式宿主示例另需 Tcl 开发包（`apt install tcl tcl-dev`）。
 
 ## 嵌入 Tcl？三条规则
 
@@ -166,7 +166,7 @@ target_link_libraries(app PRIVATE ProcInvoker::procinvoker)
 include/procinvoker/ProcInvoker.h   # 公开 API
 src/                                # ProcInvoker 入口 · ProcInvokerCore · MarkerFramer · PromptFramer
 cmake/ProcInvokerConfig.cmake.in    # 包配置模板（install/export）
-tests/                              # fixture 子进程 · 73 个单元与集成测试（ctest）
+tests/                              # fixture 子进程 · 74 个单元与集成测试（ctest）
 examples/                           # calc.tcl · calc_procs.tcl · embedded_host.c · tcl_demo.cpp
 SPEC.md                             # 设计契约（定稿决策、演进方向）
 CHANGELOG.md                        # 发布历史（Keep a Changelog）

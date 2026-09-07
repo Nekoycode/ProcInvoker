@@ -30,7 +30,8 @@
   `processDied` 的 reason 现在带 exitCode 与 ExitStatus（区分正常退出与崩溃）
 - D3：进程 Faulted 且无重启计划时（FailedToStart 或重启达上限），新注册命令
   立即收到 `ProcessDied`，不再无声悬死；Stopped 状态入队滞留仍是有意设计，
-  现在会告警提示
+  现在会告警提示。告警判据是 QProcess 真实状态而非内部状态机——`start()`
+  后立即注册命令不再误报（W1）
 
 ### 加固
 

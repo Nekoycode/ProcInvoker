@@ -175,10 +175,14 @@ void ProcInvokerCore::enqueue(qint64 id, const ProcInvoker::Command &cmd, QThrea
         failEntry(e, ProcInvoker::Status::ProcessDied);
         return;
     }
-    if (m_state == ProcInvoker::Stopped && m_pending.isEmpty()) {
-        // 未启动/已停止时滞留排队是有意设计（register-before-start），仅首批告警一次
+    // 未启动/已停止时滞留排队是有意设计（register-before-start），仅首批告警一次。
+    // 判据在 Stopped 之外叠加进程真实状态：QProcess::start() 同步进入 Starting，
+    // start() 后立刻注册命令时 onStarted 尚未触发、m_state 仍是 Stopped，不得误报；
+    // Faulted 重启窗口（m_restarting）也不告警——命令将在自动重启后执行
+    if (m_state == ProcInvoker::Stopped
+        && (!m_process || m_process->state() == QProcess::NotRunning)
+        && m_pending.isEmpty())
         qWarning("ProcInvoker: process not running; command queued until start()");
-    }
     m_pending.enqueue(e);
     tryStartNext();
 }

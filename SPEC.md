@@ -81,8 +81,9 @@ ProcInvoker（公开 API，线程安全入口，QObject）
      的程序）：超限后停留 Faulted；计数在命令成功完成（Ok）或人工 start()/stop()
      后清零。
    - 入队守卫：进程 Faulted 且无重启计划（FailedToStart 或重启达上限）时，新注册
-     命令立即收到 `ProcessDied`，不无声悬死；Stopped（未启动/已停止）时入队滞留是
-     有意设计（register-before-start），仅告警提示。
+     命令立即收到 `ProcessDied`，不无声悬死；进程确实未在启动/运行中（未启动或
+     已停止）时入队滞留是有意设计（register-before-start），按批告警一次——
+     判据是 QProcess 真实状态而非状态机（start() 后 onStarted 未触发时不得误报）。
    - `stop()` 时对在途+排队命令逐条发 `Cancelled` 错误结果，再终止进程：先关闭
      stdin 等进程自行退出（500ms），未退出再强杀（kill + 1000ms）。
    - 单条命令超时：该命令以 `Timeout` 回调并出队，**不杀进程**；
