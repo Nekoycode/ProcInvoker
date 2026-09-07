@@ -6,7 +6,8 @@
   <img src="https://img.shields.io/badge/Qt-5.15-41CD52?logo=qt&logoColor=white" alt="Qt 5.15">
   <img src="https://img.shields.io/badge/C%2B%2B-17-00599C?logo=c%2B%2B&logoColor=white" alt="C++17">
   <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-lightgrey" alt="Platforms">
-  <img src="https://img.shields.io/badge/tests-47%20passing-brightgreen" alt="Tests">
+  <a href="https://github.com/Nekoycode/ProcInvoker/actions/workflows/ci.yml"><img src="https://github.com/Nekoycode/ProcInvoker/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
 </p>
 
 **Drive any stdin/stdout REPL-style program as a child process — Tcl shells, embedded Tcl hosts, or your own command-line tools — with ordered commands, attributed results, and zero UI blocking.**
@@ -144,6 +145,7 @@ A host that calls `Tcl_Main` with no script argument works out of the box — it
 ## Project Layout
 
 ```
+.github/workflows/ci.yml          # manual-trigger CI: Linux + Windows build & test
 include/procinvoker/ProcInvoker.h   # public API
 src/                                # ProcInvoker entry · ProcInvokerCore · MarkerFramer · PromptFramer
 tests/                              # fixture child process · 47 unit & integration tests (ctest)
@@ -154,3 +156,7 @@ SPEC.md                             # design contract (pinned decisions, evoluti
 ## Contributing
 
 Keep this file and [`README.zh-CN.md`](README.zh-CN.md) in sync, and update both whenever the public API, protocol configuration, build, or test workflow changes. Design-level decisions belong in [SPEC.md](SPEC.md).
+
+## License
+
+[MIT](LICENSE) © 2026 nekoycode

@@ -1,0 +1,46 @@
+name: CI
+
+# 仅手动触发：GitHub 网页 Actions 页或 `gh workflow run ci.yml`
+on:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt5
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qtbase5-dev qtbase5-dev-tools
+
+      - name: Configure & build
+        run: |
+          cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt 5.15.2 (MSVC)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.15.2'
+          arch: win64_msvc2019_64
+
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure & build
+        run: |
+          cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -C Release

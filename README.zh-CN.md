@@ -6,7 +6,8 @@
   <img src="https://img.shields.io/badge/Qt-5.15-41CD52?logo=qt&logoColor=white" alt="Qt 5.15">
   <img src="https://img.shields.io/badge/C%2B%2B-17-00599C?logo=c%2B%2B&logoColor=white" alt="C++17">
   <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-lightgrey" alt="支持平台">
-  <img src="https://img.shields.io/badge/tests-47%20passing-brightgreen" alt="测试">
+  <a href="https://github.com/Nekoycode/ProcInvoker/actions/workflows/ci.yml"><img src="https://github.com/Nekoycode/ProcInvoker/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="许可证: MIT">
 </p>
 
 **把一切"stdin 进命令、stdout 出消息"的程序当作子进程驱动——Tcl 解释器、嵌入式 Tcl 宿主、或你自己的命令行工具——命令有序、结果归属正确、UI 零阻塞。**
@@ -144,6 +145,7 @@ ctest --test-dir build --output-on-failure
 ## 项目结构
 
 ```
+.github/workflows/ci.yml          # 手动触发 CI：Linux + Windows 构建与测试
 include/procinvoker/ProcInvoker.h   # 公开 API
 src/                                # ProcInvoker 入口 · ProcInvokerCore · MarkerFramer · PromptFramer
 tests/                              # fixture 子进程 · 47 个单元与集成测试（ctest）
@@ -154,3 +156,7 @@ SPEC.md                             # 设计契约（定稿决策、演进方向
 ## 贡献
 
 本文件与 [`README.md`](README.md)（英文）互为镜像，任何对公开 API、协议配置、构建或测试流程的修改必须同步更新两者。设计级决策请写入 [SPEC.md](SPEC.md)。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 nekoycode
