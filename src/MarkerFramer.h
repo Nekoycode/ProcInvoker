@@ -31,9 +31,11 @@ public:
     QByteArray expectedMarker() const { return m_expected; }
 
     FeedResult feed(const QByteArray &data);
+    // 顺带清空期望标记：无在途命令时所有标记 token 一律丢弃
     void reset()
     {
         m_buffer.clear();
+        m_expected.clear();
         m_skipLineTerminator = false;
     }
 

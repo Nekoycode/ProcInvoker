@@ -70,58 +70,42 @@ void ProcInvoker::postToThread(const QPointer<QThread> &target, std::function<vo
 void ProcInvoker::setProgram(const QString &program, const QStringList &args)
 {
     m_program = program;
-    ProcInvokerCore *core = m_core;
-    QMetaObject::invokeMethod(core, [core, program, args] { core->setProgram(program, args); },
-                              Qt::QueuedConnection);
+    postToCore([core = m_core, program, args] { core->setProgram(program, args); });
 }
 
 void ProcInvoker::setWorkingDirectory(const QString &dir)
 {
-    ProcInvokerCore *core = m_core;
-    QMetaObject::invokeMethod(core, [core, dir] { core->setWorkingDirectory(dir); },
-                              Qt::QueuedConnection);
+    postToCore([core = m_core, dir] { core->setWorkingDirectory(dir); });
 }
 
 void ProcInvoker::setMarker(const QString &marker)
 {
-    ProcInvokerCore *core = m_core;
-    QMetaObject::invokeMethod(core, [core, marker] { core->setMarker(marker); },
-                              Qt::QueuedConnection);
+    postToCore([core = m_core, marker] { core->setMarker(marker); });
 }
 
 void ProcInvoker::setProbeCommand(const QString &probe)
 {
-    ProcInvokerCore *core = m_core;
-    QMetaObject::invokeMethod(core, [core, probe] { core->setProbeCommand(probe); },
-                              Qt::QueuedConnection);
+    postToCore([core = m_core, probe] { core->setProbeCommand(probe); });
 }
 
 void ProcInvoker::setCodec(const QByteArray &codecName)
 {
-    ProcInvokerCore *core = m_core;
-    QMetaObject::invokeMethod(core, [core, codecName] { core->setCodec(codecName); },
-                              Qt::QueuedConnection);
+    postToCore([core = m_core, codecName] { core->setCodec(codecName); });
 }
 
 void ProcInvoker::setRestartDelayMs(int ms)
 {
-    ProcInvokerCore *core = m_core;
-    QMetaObject::invokeMethod(core, [core, ms] { core->setRestartDelayMs(ms); },
-                              Qt::QueuedConnection);
+    postToCore([core = m_core, ms] { core->setRestartDelayMs(ms); });
 }
 
 void ProcInvoker::setPromptPattern(const QString &regex)
 {
-    ProcInvokerCore *core = m_core;
-    QMetaObject::invokeMethod(core, [core, regex] { core->setPromptPattern(regex); },
-                              Qt::QueuedConnection);
+    postToCore([core = m_core, regex] { core->setPromptPattern(regex); });
 }
 
 void ProcInvoker::clearPromptPattern()
 {
-    ProcInvokerCore *core = m_core;
-    QMetaObject::invokeMethod(core, [core] { core->setPromptPattern(QString()); },
-                              Qt::QueuedConnection);
+    postToCore([core = m_core] { core->setPromptPattern(QString()); });
 }
 
 bool ProcInvoker::start()

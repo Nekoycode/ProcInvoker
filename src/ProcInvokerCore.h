@@ -63,6 +63,10 @@ private:
     void finishCurrent(ProcInvoker::Status status, const QString &text);
     void failEntry(const Entry &e, ProcInvoker::Status status);
     void deliverIntermediate(const QString &line);
+    // 统一的结果分发：构造 Result → postToThread 回投回调 → emit 信号
+    // intermediate=true 发 messageReady（走 onMessage），否则发 resultReady（走 onResult）
+    void dispatchResult(const Entry &e, ProcInvoker::Status status,
+                        const QString &text, bool intermediate);
     void handleDeath(const QString &reason, bool allowRestart);
     void setState(ProcInvoker::State s);
 

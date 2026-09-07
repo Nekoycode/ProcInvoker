@@ -96,7 +96,6 @@ void ProcInvokerCore::startProcess()
     ensureProcess();
     m_framer.reset();
     m_framer.setMarker(m_codec->fromUnicode(m_marker));
-    m_framer.setExpectedMarker(QByteArray());
     m_promptFramer.reset();
     m_promptFramer.setPattern(m_promptPattern); // 死亡/停止路径可能跳过了 finishCurrent 的同步
     m_stderrBuffer.clear();
@@ -110,7 +109,6 @@ void ProcInvokerCore::stopAll()
     m_restarting = false;
     m_cmdTimer->stop();
     m_framer.reset();
-    m_framer.setExpectedMarker(QByteArray());
     m_promptFramer.reset();
     m_stderrBuffer.clear();
     m_awaitingFirstPrompt = false;
@@ -250,34 +248,40 @@ void ProcInvokerCore::deliverIntermediate(const QString &line)
         m_current.collected.append(line);
         return;
     }
+    dispatchResult(m_current, ProcInvoker::Status::Ok, line, true);
+}
+
+void ProcInvokerCore::dispatchResult(const Entry &e, ProcInvoker::Status status,
+                                     const QString &text, bool intermediate)
+{
     ProcInvoker::Result r;
-    r.commandId = m_current.id;
-    r.text = line;
-    r.status = ProcInvoker::Status::Ok;
-    r.isIntermediate = true;
-    if (m_current.cmd.onMessage) {
-        const auto cb = m_current.cmd.onMessage;
-        const QPointer<QThread> target = m_current.cbThread;
-        ProcInvoker::postToThread(target, [cb, r] { cb(r); });
+    r.commandId = e.id;
+    r.text = text;
+    r.status = status;
+    r.isIntermediate = intermediate;
+    if (intermediate) {
+        if (e.cmd.onMessage) {
+            const auto cb = e.cmd.onMessage;
+            const QPointer<QThread> target = e.cbThread;
+            ProcInvoker::postToThread(target, [cb, r] { cb(r); });
+        }
+        emit messageReady(r.commandId, r);
+    } else {
+        if (e.cmd.onResult) {
+            const auto cb = e.cmd.onResult;
+            const QPointer<QThread> target = e.cbThread;
+            ProcInvoker::postToThread(target, [cb, r] { cb(r); });
+        }
+        emit resultReady(r.commandId, r);
     }
-    emit messageReady(r.commandId, r);
 }
 
 void ProcInvokerCore::finishCurrent(ProcInvoker::Status status, const QString &text)
 {
     m_cmdTimer->stop();
+    // 不变量：命令结束时立即清空期望标记，陈旧标记不会错位结束后续命令
     m_framer.setExpectedMarker(QByteArray());
-    ProcInvoker::Result r;
-    r.commandId = m_current.id;
-    r.text = text;
-    r.status = status;
-    r.isIntermediate = false;
-    if (m_current.cmd.onResult) {
-        const auto cb = m_current.cmd.onResult;
-        const QPointer<QThread> target = m_current.cbThread;
-        ProcInvoker::postToThread(target, [cb, r] { cb(r); });
-    }
-    emit resultReady(r.commandId, r);
+    dispatchResult(m_current, status, text, false);
     m_hasCurrent = false;
     m_current = Entry();
     m_promptFramer.setPattern(m_promptPattern); // 应用被闩锁推迟的模式切换
@@ -286,15 +290,7 @@ void ProcInvokerCore::finishCurrent(ProcInvoker::Status status, const QString &t
 
 void ProcInvokerCore::failEntry(const Entry &e, ProcInvoker::Status status)
 {
-    ProcInvoker::Result r;
-    r.commandId = e.id;
-    r.status = status;
-    if (e.cmd.onResult) {
-        const auto cb = e.cmd.onResult;
-        const QPointer<QThread> target = e.cbThread;
-        ProcInvoker::postToThread(target, [cb, r] { cb(r); });
-    }
-    emit resultReady(r.commandId, r);
+    dispatchResult(e, status, QString(), false);
 }
 
 void ProcInvokerCore::handleDeath(const QString &reason, bool allowRestart)
@@ -304,7 +300,6 @@ void ProcInvokerCore::handleDeath(const QString &reason, bool allowRestart)
     m_deadHandled = true;
     m_cmdTimer->stop();
     m_framer.reset();
-    m_framer.setExpectedMarker(QByteArray());
     m_promptFramer.reset();
     m_awaitingFirstPrompt = false;
     setState(ProcInvoker::Faulted);

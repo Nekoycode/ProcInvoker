@@ -2,6 +2,7 @@
 #define PROCINVOKER_H
 
 #include <QAtomicInteger>
+#include <QMetaObject>
 #include <QObject>
 #include <QPointer>
 #include <QString>
@@ -9,6 +10,7 @@
 #include <QThread>
 
 #include <functional>
+#include <utility>
 
 class ProcInvokerCore;
 
@@ -107,6 +109,12 @@ private:
     friend class ProcInvokerCore;
     // 将 fn 投递到 target 线程事件循环执行；线程已销毁、未运行或无事件循环时丢弃并告警
     static void postToThread(const QPointer<QThread> &target, std::function<void()> fn);
+    // 将 fn queued 投递到工作线程的核心对象；同接收者的 queued 调用按投递顺序执行
+    template <typename Fn>
+    void postToCore(Fn &&fn)
+    {
+        QMetaObject::invokeMethod(m_core, std::forward<Fn>(fn), Qt::QueuedConnection);
+    }
 
     ProcInvokerCore *m_core = nullptr; // 活在 m_thread 工作线程
     QThread *m_thread = nullptr;
