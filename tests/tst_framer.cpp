@@ -30,6 +30,7 @@ private slots:
     void wrongIdMarkerDropped();
     void bareMarkerDropped();
     void markerDroppedWhenNoExpected();
+    void resetClearsExpected();
 };
 
 void TestFramer::completeLines()
@@ -182,6 +183,17 @@ void TestFramer::markerDroppedWhenNoExpected()
 {
     // 无在途命令（期望标记为空）：一切标记都丢弃，仅做行分帧
     MarkerFramer f(MARK);
+    const auto r = f.feed(QByteArray("noise\n") + FULL + "\n");
+    QVERIFY(!r.markerFound);
+    QCOMPARE(r.frames.size(), 1);
+    QCOMPARE(r.frames[0], QByteArray("noise"));
+}
+
+void TestFramer::resetClearsExpected()
+{
+    // reset() 顺带清空期望标记：复位后原期望标记按陈旧标记丢弃，不判定结束
+    MarkerFramer f = makeFramer();
+    f.reset();
     const auto r = f.feed(QByteArray("noise\n") + FULL + "\n");
     QVERIFY(!r.markerFound);
     QCOMPARE(r.frames.size(), 1);

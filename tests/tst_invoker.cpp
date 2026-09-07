@@ -10,6 +10,45 @@ static const QString TEST_MARKER = QStringLiteral("@@TESTMARK@@");
 using Cmd = ProcInvoker::Command;
 using Result = ProcInvoker::Result;
 
+// 捕获工作线程发出的 qWarning（QTest::ignoreMessage 不适用跨线程）
+class WarningCapture
+{
+public:
+    WarningCapture()
+    {
+        QMutexLocker lk(&mutex());
+        warnings().clear();
+        m_prev = qInstallMessageHandler(
+            [](QtMsgType, const QMessageLogContext &, const QString &msg) {
+                QMutexLocker lk(&mutex());
+                warnings().append(msg);
+            });
+    }
+    ~WarningCapture() { qInstallMessageHandler(m_prev); }
+
+    static bool contains(const QString &needle)
+    {
+        QMutexLocker lk(&mutex());
+        for (const QString &w : warnings())
+            if (w.contains(needle))
+                return true;
+        return false;
+    }
+
+private:
+    static QMutex &mutex()
+    {
+        static QMutex m;
+        return m;
+    }
+    static QStringList &warnings()
+    {
+        static QStringList w;
+        return w;
+    }
+    QtMessageHandler m_prev;
+};
+
 static Cmd makeCmd(const QString &text,
                    std::function<void(const Result &)> onResult = {},
                    std::function<void(const Result &)> onMessage = {},
@@ -50,6 +89,19 @@ private slots:
     void promptStartupAbsorbed();
     void promptModeLatchedMidFlight();
     void invalidPromptPatternStaysMarker();
+    void defaultFlagsImplyExpectResult();
+    void conflictingFlagsPreferExpectResult();
+    void callbackThreadOverride();
+    void registerDuringFaultedRunsAfterRestart();
+    void noAutoRestartWhenDisabled();
+    void stopBeatsRestartTimer();
+    void clearPromptPatternDuringStartupWait();
+    void markerToPromptSwitchMidFlight();
+    void stderrResidualFlushedOnDeath();
+    void callbackThreadDestroyedDropsCallback();
+    void callbackThreadNotRunningDropsCallback();
+    void unknownCodecFallsBackToUtf8();
+    void stopRegisterStartCycle();
 
 private:
     static void startAndWaitIdle(ProcInvoker *inv)
@@ -78,11 +130,16 @@ void TestInvoker::lifecycle()
 {
     ProcInvoker inv;
     inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    QSignalSpy stateSpy(&inv, &ProcInvoker::stateChanged);
     QCOMPARE(inv.state(), ProcInvoker::Stopped);
     QVERIFY(inv.start());
     QTRY_COMPARE_WITH_TIMEOUT(inv.state(), ProcInvoker::Idle, 5000);
+    // 状态转换经 stateChanged 信号发出
+    QTRY_VERIFY_WITH_TIMEOUT(stateSpy.count() >= 1, 5000);
+    QCOMPARE(qvariant_cast<ProcInvoker::State>(stateSpy.first()[0]), ProcInvoker::Idle);
     inv.stop();
     QTRY_COMPARE_WITH_TIMEOUT(inv.state(), ProcInvoker::Stopped, 5000);
+    QCOMPARE(qvariant_cast<ProcInvoker::State>(stateSpy.last()[0]), ProcInvoker::Stopped);
 }
 
 void TestInvoker::expectResultRoundtrip()
@@ -167,6 +224,7 @@ void TestInvoker::streamingMessages()
 
     QList<Result> messages;
     QList<Result> results;
+    QSignalSpy messageSpy(&inv, &ProcInvoker::messageReceived);
     inv.registerCommand(makeCmd(QStringLiteral("printmulti 3 tick"),
                                 [&](const Result &r) { results.append(r); },
                                 [&](const Result &r) { messages.append(r); }));
@@ -177,6 +235,7 @@ void TestInvoker::streamingMessages()
         QCOMPARE(m.text, QStringLiteral("tick"));
         QCOMPARE(m.status, ProcInvoker::Status::Ok);
     }
+    QTRY_VERIFY_WITH_TIMEOUT(messageSpy.count() >= 3, 5000); // 中间消息同时经信号发出
     QTRY_COMPARE_WITH_TIMEOUT(results.size(), 1, 5000);
     QVERIFY(!results[0].isIntermediate);
     QCOMPARE(results[0].status, ProcInvoker::Status::Ok);
@@ -265,6 +324,7 @@ void TestInvoker::stopCancelsPending()
     const qint64 id1 = inv.registerCommand(makeCmd(QStringLiteral("slow 800 first"), collect));
     const qint64 id2 = inv.registerCommand(makeCmd(QStringLiteral("print second"), collect));
 
+    QSignalSpy diedSpy(&inv, &ProcInvoker::processDied);
     inv.stop();
 
     QTRY_COMPARE_WITH_TIMEOUT(results.size(), 2, 5000);
@@ -276,6 +336,9 @@ void TestInvoker::stopCancelsPending()
     QVERIFY(cancelledIds.contains(id1));
     QVERIFY(cancelledIds.contains(id2));
     QTRY_COMPARE_WITH_TIMEOUT(inv.state(), ProcInvoker::Stopped, 5000);
+    QTest::qWait(200);
+    QCOMPARE(results.size(), 2);  // 进程终止后无补发的 ProcessDied 结果
+    QCOMPARE(diedSpy.count(), 0); // m_stopping 守卫：kill 引发的 finished 不得再发 processDied
 }
 
 void TestInvoker::failedToStartNoRestart()
@@ -444,13 +507,17 @@ void TestInvoker::promptStreaming()
 
     QList<Result> messages;
     QList<Result> results;
+    QSignalSpy messageSpy(&inv, &ProcInvoker::messageReceived);
     inv.registerCommand(makeCmd(QStringLiteral("printmulti 3 tick"),
                                 [&](const Result &r) { results.append(r); },
                                 [&](const Result &r) { messages.append(r); }));
 
     QTRY_COMPARE_WITH_TIMEOUT(messages.size(), 3, 5000);
-    for (const Result &m : messages)
+    for (const Result &m : messages) {
+        QVERIFY(m.isIntermediate);
         QCOMPARE(m.text, QStringLiteral("tick"));
+    }
+    QTRY_VERIFY_WITH_TIMEOUT(messageSpy.count() >= 3, 5000);
     QTRY_COMPARE_WITH_TIMEOUT(results.size(), 1, 5000);
     QCOMPARE(results[0].status, ProcInvoker::Status::Ok);
     QCOMPARE(results[0].text, QStringLiteral("tick"));
@@ -541,6 +608,338 @@ void TestInvoker::invalidPromptPatternStaysMarker()
     QVERIFY2(warnings.contains(QStringLiteral(
                  "ProcInvoker: invalid prompt pattern, keeping current framing mode")),
              qPrintable(warnings.join(QLatin1Char('\n'))));
+}
+
+void TestInvoker::defaultFlagsImplyExpectResult()
+{
+    // 标志位规范化：flags 全缺省时自动补 ExpectResult
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    startAndWaitIdle(&inv);
+
+    QList<Result> results;
+    Cmd c = makeCmd(QStringLiteral("print x"), [&](const Result &r) { results.append(r); });
+    c.flags = ProcInvoker::CommandFlags(); // 全缺省（QFlags(0) 构造在 Qt5 已弃用）
+    inv.registerCommand(c);
+
+    QTRY_COMPARE_WITH_TIMEOUT(results.size(), 1, 5000);
+    QCOMPARE(results[0].status, ProcInvoker::Status::Ok);
+    QCOMPARE(results[0].text, QStringLiteral("x"));
+}
+
+void TestInvoker::conflictingFlagsPreferExpectResult()
+{
+    // 标志位规范化：ExpectResult 与 FireAndForget 同时设置时剥除 FireAndForget
+    // （若 FF 生效会写完即以空文本完成，text=="x" 可区分）
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    startAndWaitIdle(&inv);
+
+    QList<Result> results;
+    Cmd c = makeCmd(QStringLiteral("print x"), [&](const Result &r) { results.append(r); });
+    c.flags = ProcInvoker::ExpectResult | ProcInvoker::FireAndForget;
+    inv.registerCommand(c);
+
+    QTRY_COMPARE_WITH_TIMEOUT(results.size(), 1, 5000);
+    QCOMPARE(results[0].status, ProcInvoker::Status::Ok);
+    QCOMPARE(results[0].text, QStringLiteral("x"));
+}
+
+void TestInvoker::callbackThreadOverride()
+{
+    // Command::callbackThread 显式覆盖：回调在指定线程执行
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    startAndWaitIdle(&inv);
+
+    QThread t;
+    t.start();
+
+    QAtomicInt calls{0};
+    QThread *cbThread = nullptr;
+    QList<Result> results;
+    Cmd c = makeCmd(QStringLiteral("print ov"), [&](const Result &r) {
+        cbThread = QThread::currentThread();
+        results.append(r);
+        calls.ref();
+    });
+    c.callbackThread = &t;
+    inv.registerCommand(c);
+
+    QTRY_COMPARE_WITH_TIMEOUT(calls.loadRelaxed(), 1, 5000);
+    t.quit();
+    t.wait(); // 回调线程退出后再读取，无数据竞争
+    QCOMPARE(cbThread, &t);
+    QCOMPARE(results.size(), 1);
+    QCOMPARE(results[0].status, ProcInvoker::Status::Ok);
+    QCOMPARE(results[0].text, QStringLiteral("ov"));
+}
+
+void TestInvoker::registerDuringFaultedRunsAfterRestart()
+{
+    // Faulted 期间注册的命令滞留排队，自动重启后正常执行
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    inv.setRestartDelayMs(300);
+    startAndWaitIdle(&inv);
+
+    QSignalSpy diedSpy(&inv, &ProcInvoker::processDied);
+    QSignalSpy restartedSpy(&inv, &ProcInvoker::restarted);
+
+    QList<Result> died;
+    inv.registerCommand(makeCmd(QStringLiteral("crash"),
+                                [&](const Result &r) { died.append(r); }));
+    QTRY_VERIFY_WITH_TIMEOUT(diedSpy.count() >= 1, 5000);
+    QCOMPARE(died.size(), 1);
+    QCOMPARE(died[0].status, ProcInvoker::Status::ProcessDied);
+    QCOMPARE(inv.state(), ProcInvoker::Faulted);
+
+    QList<Result> results;
+    inv.registerCommand(makeCmd(QStringLiteral("print back"),
+                                [&](const Result &r) { results.append(r); }));
+    QTRY_COMPARE_WITH_TIMEOUT(results.size(), 1, 5000);
+    QCOMPARE(results[0].status, ProcInvoker::Status::Ok);
+    QCOMPARE(results[0].text, QStringLiteral("back"));
+    QTRY_VERIFY_WITH_TIMEOUT(restartedSpy.count() >= 1, 5000);
+}
+
+void TestInvoker::noAutoRestartWhenDisabled()
+{
+    // setRestartDelayMs(-1)：崩溃后发 processDied 进 Faulted，不自动重启
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    inv.setRestartDelayMs(-1);
+    startAndWaitIdle(&inv);
+
+    QSignalSpy diedSpy(&inv, &ProcInvoker::processDied);
+    QSignalSpy restartedSpy(&inv, &ProcInvoker::restarted);
+
+    inv.registerCommand(makeCmd(QStringLiteral("crash"), {}, {}, ProcInvoker::FireAndForget));
+    QTRY_VERIFY_WITH_TIMEOUT(diedSpy.count() >= 1, 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(inv.state(), ProcInvoker::Faulted, 5000);
+
+    QTest::qWait(500); // 等超过常规重启周期
+    QCOMPARE(restartedSpy.count(), 0);
+    QCOMPARE(inv.state(), ProcInvoker::Faulted);
+}
+
+void TestInvoker::stopBeatsRestartTimer()
+{
+    // 崩溃后、重启定时器触发前 stop()：不重启，停在 Stopped
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    inv.setRestartDelayMs(400);
+    startAndWaitIdle(&inv);
+
+    QSignalSpy diedSpy(&inv, &ProcInvoker::processDied);
+    QSignalSpy restartedSpy(&inv, &ProcInvoker::restarted);
+
+    inv.registerCommand(makeCmd(QStringLiteral("crash"), {}, {}, ProcInvoker::FireAndForget));
+    QTRY_VERIFY_WITH_TIMEOUT(diedSpy.count() >= 1, 5000);
+    inv.stop();
+
+    QTest::qWait(600); // 超过重启延迟
+    QCOMPARE(restartedSpy.count(), 0);
+    QCOMPARE(inv.state(), ProcInvoker::Stopped);
+}
+
+void TestInvoker::clearPromptPatternDuringStartupWait()
+{
+    // 提示符模式启动但被调程序不打印提示符：队列卡死（已知限制）；
+    // clearPromptPattern() 取消启动等待，积压命令按标记模式正常完成
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH)); // 不带 --prompt：永不打印提示符
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    inv.setPromptPattern(QStringLiteral("% "));
+    QVERIFY(inv.start());
+
+    QList<Result> results;
+    inv.registerCommand(makeCmd(QStringLiteral("print hello"),
+                                [&](const Result &r) { results.append(r); }));
+    QTest::qWait(200);
+    QCOMPARE(results.size(), 0); // 启动等待期队列不推进
+
+    inv.clearPromptPattern();
+    QTRY_COMPARE_WITH_TIMEOUT(results.size(), 1, 5000);
+    QCOMPARE(results[0].status, ProcInvoker::Status::Ok);
+    QCOMPARE(results[0].text, QStringLiteral("hello"));
+    QTRY_COMPARE_WITH_TIMEOUT(inv.state(), ProcInvoker::Idle, 5000);
+}
+
+void TestInvoker::markerToPromptSwitchMidFlight()
+{
+    // 运行期 marker→prompt 切换：在途命令按闩锁的标记模式结束（提示符文本
+    // 不被剥除，作为普通输出归属），后续命令切换到提示符模式
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH),
+                   {QStringLiteral("--prompt"), QStringLiteral("% ")});
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    startAndWaitIdle(&inv);
+
+    QList<Result> results1;
+    inv.registerCommand(makeCmd(QStringLiteral("slow 300 x"),
+                                [&](const Result &r) { results1.append(r); }, {},
+                                ProcInvoker::ExpectResult | ProcInvoker::CollectAll, 3000));
+    inv.setPromptPattern(QStringLiteral("% ")); // queued 于命令之后：命令已在标记模式下启动
+
+    QTRY_COMPARE_WITH_TIMEOUT(results1.size(), 1, 5000);
+    QCOMPARE(results1[0].status, ProcInvoker::Status::Ok);
+    // 标记模式语义：fixture 每行命令后打印的 "% " 提示符是普通输出。
+    // 启动提示符与 "x" 粘连成 "% x"；若错误切换为提示符模式则提示符被剥除
+    QCOMPARE(results1[0].text, QStringLiteral("% x\n% "));
+
+    QList<Result> results2;
+    inv.registerCommand(makeCmd(QStringLiteral("print after"),
+                                [&](const Result &r) { results2.append(r); }));
+    QTRY_COMPARE_WITH_TIMEOUT(results2.size(), 1, 5000);
+    QCOMPARE(results2[0].status, ProcInvoker::Status::Ok);
+    QCOMPARE(results2[0].text, QStringLiteral("after")); // 提示符模式下提示符被剥除
+}
+
+void TestInvoker::stderrResidualFlushedOnDeath()
+{
+    // stderr 未换行的残余在进程死亡时被冲刷转发
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    inv.setRestartDelayMs(-1);
+    startAndWaitIdle(&inv);
+
+    QSignalSpy stderrSpy(&inv, &ProcInvoker::stderrReceived);
+    QSignalSpy diedSpy(&inv, &ProcInvoker::processDied);
+
+    inv.registerCommand(makeCmd(QStringLiteral("errnonl partial"), {}, {},
+                                ProcInvoker::FireAndForget));
+    // 死亡前留 300ms 窗口，确保残余字节已进入核心层行缓冲（避免与 finished 信号竞态）
+    inv.registerCommand(makeCmd(QStringLiteral("slow 300 x"), {}, {},
+                                ProcInvoker::FireAndForget));
+    inv.registerCommand(makeCmd(QStringLiteral("crash"), {}, {},
+                                ProcInvoker::FireAndForget));
+
+    QTRY_VERIFY_WITH_TIMEOUT(diedSpy.count() >= 1, 5000);
+    QTRY_VERIFY_WITH_TIMEOUT(stderrSpy.count() >= 1, 5000);
+    QCOMPARE(stderrSpy[0][0].toString(), QStringLiteral("partial"));
+}
+
+void TestInvoker::callbackThreadDestroyedDropsCallback()
+{
+    // postToThread 异常分支：回调目标线程已销毁 → 回调丢弃并告警，信号仍发
+    WarningCapture cap;
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    startAndWaitIdle(&inv);
+
+    QThread *t = new QThread;
+    t->start();
+
+    QSignalSpy finishedSpy(&inv, &ProcInvoker::commandFinished);
+    QAtomicInt calls{0};
+    Cmd c = makeCmd(QStringLiteral("slow 500 gone"),
+                    [&](const Result &) { calls.ref(); });
+    c.callbackThread = t;
+    const qint64 id = inv.registerCommand(c);
+
+    QTest::qWait(200); // 等 enqueue 在工作线程落地（QPointer 接管），再销毁目标线程
+    t->quit();
+    t->wait();
+    delete t;
+
+    QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 1, 5000);
+    QCOMPARE(finishedSpy[0][0].toLongLong(), id);
+    const Result r = finishedSpy[0][1].value<ProcInvoker::Result>();
+    QCOMPARE(r.status, ProcInvoker::Status::Ok);
+    QCOMPARE(r.text, QStringLiteral("gone"));
+    QCOMPARE(calls.loadRelaxed(), 0); // 回调被丢弃
+    QTRY_VERIFY_WITH_TIMEOUT(
+        WarningCapture::contains(QStringLiteral("callback thread already destroyed")), 2000);
+}
+
+void TestInvoker::callbackThreadNotRunningDropsCallback()
+{
+    // postToThread 异常分支：回调目标线程从未 start → 回调丢弃并告警，信号仍发
+    WarningCapture cap;
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    startAndWaitIdle(&inv);
+
+    QThread t; // 从未启动；存活整个用例，QPointer 保持有效
+    QSignalSpy finishedSpy(&inv, &ProcInvoker::commandFinished);
+    QAtomicInt calls{0};
+    Cmd c = makeCmd(QStringLiteral("print nr"), [&](const Result &) { calls.ref(); });
+    c.callbackThread = &t;
+    const qint64 id = inv.registerCommand(c);
+
+    QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 1, 5000);
+    QCOMPARE(finishedSpy[0][0].toLongLong(), id);
+    const Result r = finishedSpy[0][1].value<ProcInvoker::Result>();
+    QCOMPARE(r.status, ProcInvoker::Status::Ok);
+    QCOMPARE(r.text, QStringLiteral("nr"));
+    QCOMPARE(calls.loadRelaxed(), 0);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        WarningCapture::contains(QStringLiteral("callback thread not running")), 2000);
+}
+
+void TestInvoker::unknownCodecFallsBackToUtf8()
+{
+    // 未知 codec：告警并回退 UTF-8，命令往返不受影响
+    WarningCapture cap;
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    inv.setCodec("BOGUS");
+    startAndWaitIdle(&inv);
+
+    QList<Result> results;
+    inv.registerCommand(makeCmd(QStringLiteral("print hello"),
+                                [&](const Result &r) { results.append(r); }));
+    QTRY_COMPARE_WITH_TIMEOUT(results.size(), 1, 5000);
+    QCOMPARE(results[0].status, ProcInvoker::Status::Ok);
+    QCOMPARE(results[0].text, QStringLiteral("hello"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        WarningCapture::contains(QStringLiteral("unknown codec 'BOGUS'")), 2000);
+}
+
+void TestInvoker::stopRegisterStartCycle()
+{
+    // stop 后注册的命令滞留排队，再次 start() 后正常执行
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    startAndWaitIdle(&inv);
+    inv.stop();
+    QTRY_COMPARE_WITH_TIMEOUT(inv.state(), ProcInvoker::Stopped, 5000);
+
+    QList<Result> results;
+    inv.registerCommand(makeCmd(QStringLiteral("print again"),
+                                [&](const Result &r) { results.append(r); }));
+    QTest::qWait(150);
+    QCOMPARE(results.size(), 0); // Stopped 状态不推进队列
+
+    QVERIFY(inv.start());
+    QTRY_COMPARE_WITH_TIMEOUT(results.size(), 1, 5000);
+    QCOMPARE(results[0].status, ProcInvoker::Status::Ok);
+    QCOMPARE(results[0].text, QStringLiteral("again"));
 }
 
 QTEST_GUILESS_MAIN(TestInvoker)

@@ -123,7 +123,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-测试套件不依赖已安装的 Tcl：自带的行协议 fixture 子进程驱动 47 个单元与集成测试（分帧边界、顺序归属、流式、超时、崩溃重启、回调线程、提示符模式）。示例需要 `tclsh`；嵌入式宿主示例另需 Tcl 开发包（`apt install tcl tcl-dev`）。
+测试套件不依赖已安装的 Tcl：自带的行协议 fixture 子进程驱动 65 个单元与集成测试（分帧边界、顺序归属、流式、超时、崩溃重启、回调线程、提示符模式）。示例需要 `tclsh`；嵌入式宿主示例另需 Tcl 开发包（`apt install tcl tcl-dev`）。
 
 ## 嵌入 Tcl？三条规则
 
@@ -148,7 +148,7 @@ ctest --test-dir build --output-on-failure
 .github/workflows/ci.yml          # 手动触发 CI：Linux + Windows 构建与测试
 include/procinvoker/ProcInvoker.h   # 公开 API
 src/                                # ProcInvoker 入口 · ProcInvokerCore · MarkerFramer · PromptFramer
-tests/                              # fixture 子进程 · 47 个单元与集成测试（ctest）
+tests/                              # fixture 子进程 · 65 个单元与集成测试（ctest）
 examples/                           # calc.tcl · calc_procs.tcl · embedded_host.c · tcl_demo.cpp
 SPEC.md                             # 设计契约（定稿决策、演进方向）
 ```

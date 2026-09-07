@@ -123,7 +123,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The suite needs no installed Tcl: a purpose-built line-protocol fixture child process drives 47 unit & integration tests (framer edge cases, ordering, streaming, timeouts, crash/restart, callback threading, prompt mode). Examples need `tclsh`; the embedded-host example additionally needs the Tcl dev package (`apt install tcl tcl-dev`).
+The suite needs no installed Tcl: a purpose-built line-protocol fixture child process drives 65 unit & integration tests (framer edge cases, ordering, streaming, timeouts, crash/restart, callback threading, prompt mode). Examples need `tclsh`; the embedded-host example additionally needs the Tcl dev package (`apt install tcl tcl-dev`).
 
 ## Embedding Tcl? Three Rules
 
@@ -148,7 +148,7 @@ A host that calls `Tcl_Main` with no script argument works out of the box — it
 .github/workflows/ci.yml          # manual-trigger CI: Linux + Windows build & test
 include/procinvoker/ProcInvoker.h   # public API
 src/                                # ProcInvoker entry · ProcInvokerCore · MarkerFramer · PromptFramer
-tests/                              # fixture child process · 47 unit & integration tests (ctest)
+tests/                              # fixture child process · 65 unit & integration tests (ctest)
 examples/                           # calc.tcl · calc_procs.tcl · embedded_host.c · tcl_demo.cpp
 SPEC.md                             # design contract (pinned decisions, evolution directions)
 ```

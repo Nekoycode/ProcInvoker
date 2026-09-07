@@ -122,6 +122,7 @@ signals:
 - `emitmark <text>`：原样打印 text（probeCommand 在测试中配置为 `emitmark %1`，
   `%1` 即完整期望标记 marker+commandId）
 - `err <text>`：向 stderr 打印一行（用于 stderr 转发测试）
+- `errnonl <text>`：向 stderr 打印但不换行（用于进程死亡时残余冲刷测试）
 - `nop`：不产生任何输出（避免无归属回显串入下一条命令）
 - `slow <ms> <text>`：延迟 ms 后打印（用于超时测试）
 - `crash`：立即 exit(1)（用于进程死亡/重启测试）

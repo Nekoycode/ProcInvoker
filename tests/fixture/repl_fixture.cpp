@@ -6,6 +6,7 @@
 //   emitmark              打印默认结束标记 @@TESTMARK@@
 //   slow <ms> <text>      延迟 ms 后打印
 //   err <text>            打印到 stderr
+//   errnonl <text>        打印到 stderr，不换行（测试死亡时残余冲刷）
 //   nop                   不产生任何输出
 //   crash                 立即 exit(1)
 //   其他输入              原样回显一行
@@ -73,6 +74,10 @@ int main(int argc, char **argv)
             const std::string text = line.substr(4);
             std::fwrite(text.data(), 1, text.size(), stderr);
             std::fputc('\n', stderr);
+            std::fflush(stderr);
+        } else if (line.compare(0, 8, "errnonl ") == 0) {
+            const std::string text = line.substr(8);
+            std::fwrite(text.data(), 1, text.size(), stderr); // 不换行
             std::fflush(stderr);
         } else if (line == "nop") {
             // 无输出

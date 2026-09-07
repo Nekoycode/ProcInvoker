@@ -17,6 +17,8 @@ private slots:
     void dataAfterPrompt();
     void invalidPatternStaysInactive();
     void emptyPatternInactive();
+    void multiBytePromptStripped();
+    void multiBytePromptSplitAcrossFeeds();
 };
 
 void TestPromptFramer::promptStripped()
@@ -117,6 +119,29 @@ void TestPromptFramer::emptyPatternInactive()
     r = f.feed("\n");
     QVERIFY(!r.promptFound);
     QCOMPARE(r.frames.size(), 1);
+}
+
+void TestPromptFramer::multiBytePromptStripped()
+{
+    // 多字节提示符（UTF-8 "» "）：按编码后字节长度剥除，不残留半截字节
+    PromptFramer f(QString::fromUtf8("\xc2\xbb "));
+    const auto r = f.feed(QByteArray("hello\n") + "\xc2\xbb ");
+    QVERIFY(r.promptFound);
+    QCOMPARE(r.frames.size(), 1);
+    QCOMPARE(r.frames[0], QByteArray("hello"));
+}
+
+void TestPromptFramer::multiBytePromptSplitAcrossFeeds()
+{
+    // 多字节提示符跨分片（首字节单独到达）：不误判，拼齐后命中
+    PromptFramer f(QString::fromUtf8("\xc2\xbb "));
+    auto r = f.feed(QByteArray("hello\n") + "\xc2");
+    QVERIFY(!r.promptFound);
+    QCOMPARE(r.frames.size(), 1);
+    QCOMPARE(r.frames[0], QByteArray("hello"));
+    r = f.feed(QByteArray("\xbb "));
+    QVERIFY(r.promptFound);
+    QVERIFY(r.frames.isEmpty());
 }
 
 QTEST_APPLESS_MAIN(TestPromptFramer)
