@@ -98,6 +98,24 @@ No way to inject a marker (closed third-party REPL)? Fall back to prompt-regex f
 inv->setPromptPattern("% ");   // opt-in; see docs for its three inherent limitations
 ```
 
+### Command Lifecycle
+
+```
+registerCommand()          ProcInvokerCore (worker thread)          child process
+       │                            │                                    │
+       ▼                            ▼                                    ▼
+   queued (FIFO) ───►  written: command text + probe line  ───►  executes
+       │                            │                                    │
+       │                     onMessage(line)  ◄────────────────  prints output...
+       │                     onMessage(line)  ◄────────────────  ...line by line
+       │                            │                                    │
+       │                     marker+commandId matched  ◄───────  probe prints marker
+       ▼                            ▼
+   onResult(Ok)  ◄───  command finished; next queued command starts immediately
+```
+
+Failures land on the same `onResult` channel with a distinct status: `Timeout` (timer fired, process untouched), `ProcessDied` (crashed — queued commands are all answered, then the process auto-restarts), `Cancelled` (`stop()`), `WriteError` (stdin write failed). Registration is fire-and-forget: you get a `qint64` id back immediately, callbacks arrive later on your thread.
+
 ## Feature Matrix
 
 | Capability | API |
@@ -113,7 +131,7 @@ inv->setPromptPattern("% ");   // opt-in; see docs for its three inherent limita
 | Graceful shutdown with `Cancelled` callbacks | `stop()` — closes stdin first so the REPL exits on EOF, kills only as fallback |
 | Global monitoring | `commandFinished` / `messageReceived` / `stderrReceived` / `processDied` / `restarted` / `stateChanged` |
 
-Failure semantics worth knowing: a dying process hands the in-flight command its partial output collected so far (aggregated for `CollectAll`, last line otherwise) with its `ProcessDied` result, and the `processDied` reason carries exit code and exit status (`NormalExit` / `CrashExit`). Commands registered while `Faulted` with no restart pending fail immediately with `ProcessDied` rather than hanging; while `Stopped` they intentionally queue (with a one-time warning) until `start()`. Runtime `setMarker()` / `setCodec()` / `setPromptPattern()` changes are latched: the in-flight command finishes under its original settings, new values apply from the next command on.
+Failure semantics worth knowing: a dying process hands the in-flight command its partial output collected so far (aggregated for `CollectAll`, last line otherwise) with its `ProcessDied` result, and timed-out commands keep their partial output the same way. The `processDied` reason carries exit code and exit status (`NormalExit` / `CrashExit`). Commands registered while `Faulted` with no restart pending fail immediately with `ProcessDied` rather than hanging; while `Stopped` they intentionally queue (with a one-time warning) until `start()`. Runtime `setMarker()` / `setCodec()` / `setPromptPattern()` changes are latched: the in-flight command finishes under its original settings, new values apply from the next command on.
 
 ## Building & Testing
 
@@ -140,7 +158,7 @@ target_link_libraries(app PRIVATE ProcInvoker::procinvoker)
 
 The exported config pulls in `Qt5::Core` via `find_dependency`; version compatibility follows SemVer (`SameMajorVersion`). When ProcInvoker is vendored via `add_subdirectory`, tests and examples are off by default (`PROCINVOKER_BUILD_TESTS` / `PROCINVOKER_BUILD_EXAMPLES`) — library consumers don't need Qt5Test or Tcl.
 
-The suite needs no installed Tcl: a purpose-built line-protocol fixture child process drives 74 unit & integration tests (framer edge cases, ordering, streaming, timeouts, crash/restart, callback threading, prompt mode). Examples need `tclsh`; the embedded-host example additionally needs the Tcl dev package (`apt install tcl tcl-dev`).
+The suite needs no installed Tcl: a purpose-built line-protocol fixture child process drives 78 unit & integration tests (framer edge cases, ordering, streaming, timeouts, crash/restart, callback threading, prompt mode). Examples need `tclsh`; the embedded-host example additionally needs the Tcl dev package (`apt install tcl tcl-dev`).
 
 ## Embedding Tcl? Three Rules
 
@@ -159,6 +177,29 @@ A host that calls `Tcl_Main` with no script argument works out of the box — it
 - `ExpectResult` commands run serially — stdin protocols carry no request ID; this design trades concurrency for attribution
 - Socket-based callees are a recognized evolution (transport abstraction seam identified in [SPEC.md](SPEC.md)) but intentionally not implemented without a concrete use case
 
+## Troubleshooting
+
+**Every command times out, no output at all.**
+Almost always callee-side buffering: stdout over a pipe defaults to *block* buffering, so the callee's output sits in its own memory and never reaches you. The fix belongs to the callee — Tcl: `fconfigure stdout -buffering line`; C: `setvbuf(stdout, NULL, _IOLBF, 0)` plus the Tcl channel when embedding. Second suspect: your `probeCommand` never actually prints the marker (it must contain `%1`; the setter warns if it doesn't).
+
+**A command ends instantly with empty or garbage text (prompt mode).**
+Check the two prompt-mode premises: the callee must print its prompt once *at startup* (the core absorbs it before going `Idle`), and stdin echo must be off — an echoed probe line ends the command immediately in marker mode, and echoed text pollutes attribution in prompt mode.
+
+**The marker string shows up inside my results.**
+The callee echoes stdin back to stdout. Disable echo in the callee; both framing modes assume no echo.
+
+**The process restarts a few times, then everything stops.**
+That's the restart cap working: 5 *consecutive unproductive* restarts → the invoker stays `Faulted` and new registrations fail immediately with `ProcessDied`. Read the `processDied` reason — it carries `exitCode` and `NormalExit/CrashExit`. A human `start()` resets the counter.
+
+**I registered a command and nothing ever happened.**
+Look for the `process not running; command queued until start()` warning: in `Stopped` state commands queue on purpose (register-before-start is legal) and run once `start()` is called. Subscribe to `stateChanged` if you're unsure about lifecycle.
+
+**Long single-line output (base64 blobs, progress rewrites).**
+Buffers are capped: the framing buffer flushes at 1 MB, stderr lines at 64 KB — oversized data arrives as a frame instead of growing memory without bound.
+
+**Non-ASCII text is mangled.**
+Call `setCodec()` before `start()` (default UTF-8). The codec must be ASCII-compatible with single-byte newlines (UTF-16 and other stateful encodings are unsupported).
+
 ## Project Layout
 
 ```
@@ -166,7 +207,7 @@ A host that calls `Tcl_Main` with no script argument works out of the box — it
 include/procinvoker/ProcInvoker.h   # public API
 src/                                # ProcInvoker entry · ProcInvokerCore · MarkerFramer · PromptFramer
 cmake/ProcInvokerConfig.cmake.in    # package config template (install/export)
-tests/                              # fixture child process · 74 unit & integration tests (ctest)
+tests/                              # fixture child process · 78 unit & integration tests (ctest)
 examples/                           # calc.tcl · calc_procs.tcl · embedded_host.c · tcl_demo.cpp
 SPEC.md                             # design contract (pinned decisions, evolution directions)
 CHANGELOG.md                        # release history (Keep a Changelog)

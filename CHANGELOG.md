@@ -36,9 +36,14 @@
 ### 加固
 
 - 进程死亡时，在途命令的 `ProcessDied` 结果带已收到的部分输出
-  （CollectAll 为聚合，否则为最后一条），不再丢弃
+  （CollectAll 为聚合，否则为最后一条），不再丢弃；超时路径同规则
 - `stop()` 优雅退出：先关闭 stdin 让 REPL 读到 EOF 自然退出（500ms），
-  未退出再强杀
+  未退出再强杀；`startProcess` 的停止闩锁复位移到 Running 早退之前
+  （防御 stop 撞 Starting 窗口的理论性停摆）
+- `setProbeCommand()` 校验：probe 不含 `%1` 占位符时告警（探针打不出标记，
+  ExpectResult 命令会全部挂超时）
+- stdout 分帧缓冲设上限：MarkerFramer 1MB（与 stderr 64KB、PromptFramer
+  尾段 1MB 同构），超限冲刷为帧并清空，防内存 DoS
 - stderr 行缓冲设 64KB 上限：无换行残余超限即强制冲刷，防内存 DoS
 - PromptFramer 尾段设 1MB 上限：无匹配时冲刷为帧并清空，防内存 DoS 与
   反复全量匹配的 O(n²)

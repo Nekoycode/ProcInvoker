@@ -110,6 +110,9 @@ private slots:
     void setCodecMidFlightDeferred();
     void processDiedKeepsPartialOutput();
     void stderrLongLineCap();
+    void timeoutKeepsPartialOutput();
+    void probeCommandWithoutPlaceholderWarns();
+    void promptCrashAndRestart();
 
 private:
     static void startAndWaitIdle(ProcInvoker *inv)
@@ -1136,6 +1139,69 @@ void TestInvoker::enqueueRightAfterStartNoWarning()
     QCOMPARE(results[0].status, ProcInvoker::Status::Ok);
     QCOMPARE(results[0].text, QStringLiteral("x"));
     QVERIFY(!WarningCapture::contains(QStringLiteral("process not running")));
+}
+
+void TestInvoker::timeoutKeepsPartialOutput()
+{
+    // 超时路径保留部分输出（与 ProcessDied 一致）：挂死命令的已产出输出不丢弃
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setMarker(TEST_MARKER);
+    inv.setProbeCommand(QStringLiteral("emitmark %1"));
+    startAndWaitIdle(&inv);
+
+    QList<Result> results;
+    inv.registerCommand(makeCmd(QStringLiteral("printhang part1"),
+                                [&](const Result &r) { results.append(r); }, {},
+                                ProcInvoker::ExpectResult | ProcInvoker::CollectAll, 200));
+
+    QTRY_COMPARE_WITH_TIMEOUT(results.size(), 1, 5000);
+    QCOMPARE(results[0].status, ProcInvoker::Status::Timeout);
+    QCOMPARE(results[0].text, QStringLiteral("part1")); // 标记前的已收集输出保留
+    // 注意：fixture 已永久挂起，用例析构时 stop() 的优雅退出会等满 500ms 再强杀
+}
+
+void TestInvoker::probeCommandWithoutPlaceholderWarns()
+{
+    // 探针不含 %1 占位符：告警（探针打不出标记，ExpectResult 命令会全部挂超时）
+    WarningCapture cap;
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH));
+    inv.setProbeCommand(QStringLiteral("emitmark")); // 缺 %1
+    QTRY_VERIFY_WITH_TIMEOUT(
+        WarningCapture::contains(QStringLiteral("probeCommand contains no")), 2000);
+}
+
+void TestInvoker::promptCrashAndRestart()
+{
+    // 提示符模式崩溃重启：重启后首提示符吸收状态机正确重建，新命令正常往返
+    ProcInvoker inv;
+    inv.setProgram(QStringLiteral(FIXTURE_PATH),
+                   {QStringLiteral("--prompt"), QStringLiteral("% ")});
+    inv.setPromptPattern(QStringLiteral("% "));
+    inv.setRestartDelayMs(100);
+    startAndWaitIdle(&inv);
+
+    QSignalSpy diedSpy(&inv, &ProcInvoker::processDied);
+    QSignalSpy restartedSpy(&inv, &ProcInvoker::restarted);
+
+    QList<Result> results1;
+    inv.registerCommand(makeCmd(QStringLiteral("crash"),
+                                [&](const Result &r) { results1.append(r); }));
+    QTRY_COMPARE_WITH_TIMEOUT(results1.size(), 1, 5000);
+    QCOMPARE(results1[0].status, ProcInvoker::Status::ProcessDied);
+    QTRY_VERIFY_WITH_TIMEOUT(diedSpy.count() >= 1, 2000);
+
+    // 自动重启：重新吸收启动提示符后转 Idle，新命令正常结束且不含提示符文本
+    QTRY_VERIFY_WITH_TIMEOUT(restartedSpy.count() >= 1, 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(inv.state(), ProcInvoker::Idle, 5000);
+
+    QList<Result> results2;
+    inv.registerCommand(makeCmd(QStringLiteral("print back"),
+                                [&](const Result &r) { results2.append(r); }));
+    QTRY_COMPARE_WITH_TIMEOUT(results2.size(), 1, 5000);
+    QCOMPARE(results2[0].status, ProcInvoker::Status::Ok);
+    QCOMPARE(results2[0].text, QStringLiteral("back"));
 }
 
 QTEST_GUILESS_MAIN(TestInvoker)

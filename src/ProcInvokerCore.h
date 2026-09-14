@@ -27,7 +27,7 @@ public:
     // 运行期修改与 promptMode 闩锁对称：在途命令期间只记录新值，
     // 推迟到命令结束（finishCurrent）或进程复位路径（startProcess）再应用到 framer
     void setMarker(const QString &marker);
-    void setProbeCommand(const QString &probe) { m_probeCommand = probe; }
+    void setProbeCommand(const QString &probe); // 不含 %1 占位符时告警
     void setCodec(const QByteArray &name);
     void setRestartDelayMs(int ms) { m_restartDelayMs = ms; }
     // 空串 = 切回标记模式；无效正则不进入提示符模式（保持原模式）。

@@ -11,6 +11,7 @@
 //   crash                 立即 exit(1)
 //   exit0                 立即 exit(0)（测试启动即退出的重启上限）
 //   printcrash <text>     打印一行，稍候 exit(1)（测试死亡时保留部分输出）
+//   printhang <text>      打印一行后永久挂起（测试超时保留部分输出）
 //   其他输入              原样回显一行
 // 提示符模式：以 `--prompt <str>` 启动时，启动即打印一次提示符（不换行），
 // 之后每处理完一行命令再打印一次提示符。
@@ -102,6 +103,10 @@ int main(int argc, char **argv)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             std::fflush(stdout);
             std::exit(1);
+        } else if (line.compare(0, 10, "printhang ") == 0) {
+            outLine(line.substr(10));
+            for (;;) // 永久挂起：不打印标记、不退出（由调用方超时/停止回收）
+                std::this_thread::sleep_for(std::chrono::hours(24));
         } else {
             outLine(line);
         }

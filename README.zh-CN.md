@@ -98,6 +98,27 @@ inv->setProbeCommand("printf '%s\\n' \"%1\"");  // bash / sh
 inv->setPromptPattern("% ");   // opt-in；三条原理性限制见文档
 ```
 
+### 命令生命周期
+
+```
+registerCommand()          ProcInvokerCore（工作线程）             子进程
+       │                            │                                    │
+       ▼                            ▼                                    ▼
+   排队（FIFO）───►  写入：命令文本 + 探针行  ──────────────────►  执行
+       │                            │                                    │
+       │                     onMessage(行)  ◄─────────────────  逐行输出...
+       │                     onMessage(行)  ◄─────────────────  ...
+       │                            │                                    │
+       │                     匹配到 marker+commandId  ◄────────  探针打印标记
+       ▼                            ▼
+   onResult(Ok)  ◄───  命令完成；队列中下一条立即开始
+```
+
+失败也走同一个 `onResult` 通道，以 status 区分：`Timeout`（超时，进程不动）、
+`ProcessDied`（崩溃——排队命令全部收到应答，随后自动重启）、`Cancelled`（`stop()`）、
+`WriteError`（stdin 写入失败）。注册是即发即忘的：立即拿回 `qint64` id，
+回调稍后在你注册时所在的线程到达。
+
 ## 能力矩阵
 
 | 能力 | API |
@@ -113,7 +134,7 @@ inv->setPromptPattern("% ");   // opt-in；三条原理性限制见文档
 | 优雅停止（逐条 `Cancelled` 回调） | `stop()`——先关闭 stdin 让 REPL 读到 EOF 自然退出，未退出再强杀 |
 | 全局监控 | `commandFinished` / `messageReceived` / `stderrReceived` / `processDied` / `restarted` / `stateChanged` |
 
-值得了解的失败语义：进程死亡时，在途命令的 `ProcessDied` 结果带已收到的部分输出（CollectAll 为聚合，否则为最后一条），`processDied` 的 reason 带 exitCode 与 ExitStatus（`NormalExit` / `CrashExit`）。Faulted 且无重启计划时注册的命令立即收到 `ProcessDied`，不会悬死；Stopped 时注册则有意滞留排队（告警一次）直到 `start()`。运行期 `setMarker()` / `setCodec()` / `setPromptPattern()` 修改均为闩锁式：在途命令按原配置结束，新值从下一条命令起生效。
+值得了解的失败语义：进程死亡时，在途命令的 `ProcessDied` 结果带已收到的部分输出（CollectAll 为聚合，否则为最后一条），超时命令同样保留部分输出；`processDied` 的 reason 带 exitCode 与 ExitStatus（`NormalExit` / `CrashExit`）。Faulted 且无重启计划时注册的命令立即收到 `ProcessDied`，不会悬死；Stopped 时注册则有意滞留排队（告警一次）直到 `start()`。运行期 `setMarker()` / `setCodec()` / `setPromptPattern()` 修改均为闩锁式：在途命令按原配置结束，新值从下一条命令起生效。
 
 ## 构建与测试
 
@@ -140,7 +161,7 @@ target_link_libraries(app PRIVATE ProcInvoker::procinvoker)
 
 导出的 config 经 `find_dependency` 自动引入 `Qt5::Core`；版本兼容遵循 SemVer（`SameMajorVersion`）。以 `add_subdirectory` 方式引入时，tests 与 examples 默认不构建（`PROCINVOKER_BUILD_TESTS` / `PROCINVOKER_BUILD_EXAMPLES`）——库消费者无需安装 Qt5Test 或 Tcl。
 
-测试套件不依赖已安装的 Tcl：自带的行协议 fixture 子进程驱动 74 个单元与集成测试（分帧边界、顺序归属、流式、超时、崩溃重启、回调线程、提示符模式）。示例需要 `tclsh`；嵌入式宿主示例另需 Tcl 开发包（`apt install tcl tcl-dev`）。
+测试套件不依赖已安装的 Tcl：自带的行协议 fixture 子进程驱动 78 个单元与集成测试（分帧边界、顺序归属、流式、超时、崩溃重启、回调线程、提示符模式）。示例需要 `tclsh`；嵌入式宿主示例另需 Tcl 开发包（`apt install tcl tcl-dev`）。
 
 ## 嵌入 Tcl？三条规则
 
@@ -159,6 +180,29 @@ target_link_libraries(app PRIVATE ProcInvoker::procinvoker)
 - `ExpectResult` 命令串行执行——stdin 协议没有请求 ID，本设计以并发换归属
 - socket 形态被调方是已识别的演进方向（传输抽象接缝见 [SPEC.md](SPEC.md)），无具体场景前有意不实现
 
+## 常见问题排查
+
+**所有命令都超时，完全收不到输出。**
+几乎都是被调方的缓冲问题：stdout 走管道时默认是**块缓冲**，输出积压在对方内存里根本到不了你这里。修法在被调侧——Tcl：`fconfigure stdout -buffering line`；C：`setvbuf(stdout, NULL, _IOLBF, 0)`（嵌入 Tcl 时 Tcl channel 也要单独设）。第二嫌疑：`probeCommand` 没有真的打印标记（必须含 `%1`；不含时 setter 会告警）。
+
+**提示符模式下命令立刻结束、结果为空或乱码。**
+检查提示符模式的两个前提：被调程序**启动时必须打印一次提示符**（核心层吸收后才转 `Idle`）；且必须关闭 stdin 回显——标记模式下回显探针行会立即误结束命令，提示符模式下回显文本会污染归属。
+
+**结果文本里混进了标记字符串。**
+被调程序把 stdin 回显到了 stdout。在被调侧关闭回显；两种分帧模式都假定无回显。
+
+**进程重启几次后一切停摆。**
+这是重启上限在工作：连续 5 次**无产出**重启后调用器停留 `Faulted`，新注册的命令立即以 `ProcessDied` 失败。看 `processDied` 的 reason——里面带 `exitCode` 和 `NormalExit/CrashExit`。人工调用 `start()` 会清零计数。
+
+**注册了命令但永远没有任何回调。**
+留意 `process not running; command queued until start()` 告警：`Stopped` 状态下命令是有意滞留的（先注册后启动是合法用法），`start()` 后即执行。不确定生命周期时订阅 `stateChanged`。
+
+**单行超长输出（base64、进度条重写）。**
+缓冲有上限：分帧缓冲 1MB、stderr 行 64KB，超限数据会被冲刷为一帧送达，而不是无限吃内存。
+
+**非 ASCII 文本乱码。**
+`start()` 前调 `setCodec()`（默认 UTF-8）。编码必须 ASCII 兼容、单字节换行（不支持 UTF-16 等有状态编码）。
+
 ## 项目结构
 
 ```
@@ -166,7 +210,7 @@ target_link_libraries(app PRIVATE ProcInvoker::procinvoker)
 include/procinvoker/ProcInvoker.h   # 公开 API
 src/                                # ProcInvoker 入口 · ProcInvokerCore · MarkerFramer · PromptFramer
 cmake/ProcInvokerConfig.cmake.in    # 包配置模板（install/export）
-tests/                              # fixture 子进程 · 74 个单元与集成测试（ctest）
+tests/                              # fixture 子进程 · 78 个单元与集成测试（ctest）
 examples/                           # calc.tcl · calc_procs.tcl · embedded_host.c · tcl_demo.cpp
 SPEC.md                             # 设计契约（定稿决策、演进方向）
 CHANGELOG.md                        # 发布历史（Keep a Changelog）

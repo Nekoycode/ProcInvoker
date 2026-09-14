@@ -74,7 +74,9 @@ public:
     void setMarker(const QString &marker);       // 默认 "\x1dDONE\x1d"；实际期望标记为 marker+commandId
                                                  // 运行期修改对在途命令之后的命令生效（闩锁）
     // 默认 "puts \"%1\""；%1 会被替换为完整期望标记（marker+commandId），
-    // 探针须让子进程原样打印该完整标记
+    // 探针须让子进程原样打印该完整标记；不含 %1 时告警（ExpectResult 会全部挂超时）。
+    // 标记模式同样假定被调程序无 stdin 回显（或回显已关闭）：
+    // 回显的探针行含裸标记前缀，会立即误结束在途命令
     void setProbeCommand(const QString &probe);
     // 默认 "UTF-8"；需为 ASCII 兼容、单字节换行的编码（不支持 UTF-16 等有状态编码）
     // 运行期修改对在途命令之后的命令生效（闩锁，同 setMarker）
@@ -105,7 +107,8 @@ public:
     State state() const;
 
     qint64 registerCommand(const Command &cmd); // 返回 commandId，任意线程可调
-    bool cancelCommand(qint64 id);              // 仅排队中可取消；阻塞式跨线程调用
+    // 仅排队中可取消；阻塞式跨线程调用。取消成功不发结果回调，返回值即回执
+    bool cancelCommand(qint64 id);
 
 signals:
     void commandFinished(qint64 id, const ProcInvoker::Result &r);

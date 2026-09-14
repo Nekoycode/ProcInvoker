@@ -18,8 +18,14 @@ ProcInvokerCore::ProcInvokerCore(QObject *parent)
     m_cmdTimer = new QTimer(this);
     m_cmdTimer->setSingleShot(true);
     connect(m_cmdTimer, &QTimer::timeout, this, [this] {
-        if (m_hasCurrent)
-            finishCurrent(ProcInvoker::Status::Timeout, QString());
+        if (m_hasCurrent) {
+            // 超时保留部分输出（与 ProcessDied 一致：聚合 join 或最后一条）——
+            // 挂死命令的已产出输出恰是排障最有价值的
+            const QString partial = m_current.cmd.flags.testFlag(ProcInvoker::CollectAll)
+                                        ? m_current.collected.join(QLatin1Char('\n'))
+                                        : m_current.lastLine;
+            finishCurrent(ProcInvoker::Status::Timeout, partial);
+        }
     });
 }
 
@@ -36,6 +42,15 @@ void ProcInvokerCore::setMarker(const QString &marker)
         return; // 在途命令的期望标记按旧值固定：推迟到 finishCurrent 再应用到 framer
     ensureCodec();
     m_framer.setMarker(m_codec->fromUnicode(m_marker));
+}
+
+void ProcInvokerCore::setProbeCommand(const QString &probe)
+{
+    // 探针必须含 %1 占位符：否则打不出期望标记，ExpectResult 命令会全部挂超时
+    if (!probe.contains(QLatin1String("%1")))
+        qWarning("ProcInvoker: probeCommand contains no '%%1' placeholder; "
+                 "ExpectResult commands will time out");
+    m_probeCommand = probe;
 }
 
 void ProcInvokerCore::setPromptPattern(const QString &pattern)
@@ -110,11 +125,14 @@ void ProcInvokerCore::startProcess(bool manual)
 {
     if (m_program.isEmpty())
         return;
+    // 不变量：任何 startProcess 调用都必须解除停止闩锁，包括 Running 早退——
+    // 否则 stop() 撞 Starting 窗口（kill 无的放矢、进程后进 Running）时
+    // m_stopping 永久卡 true，队列停摆
+    m_stopping = false;
     if (m_process && m_process->state() != QProcess::NotRunning)
         return;
     if (manual)
         m_restartCount = 0; // 人工 start()：连续自动重启计数清零
-    m_stopping = false;
     m_deadHandled = false;
     applyPendingCodec(); // 死亡/停止路径可能跳过了 finishCurrent 的应用
     ensureProcess();

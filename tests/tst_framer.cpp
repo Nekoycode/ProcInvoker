@@ -31,6 +31,7 @@ private slots:
     void bareMarkerDropped();
     void markerDroppedWhenNoExpected();
     void resetClearsExpected();
+    void bufferCapFlushes();
 };
 
 void TestFramer::completeLines()
@@ -198,6 +199,23 @@ void TestFramer::resetClearsExpected()
     QVERIFY(!r.markerFound);
     QCOMPARE(r.frames.size(), 1);
     QCOMPARE(r.frames[0], QByteArray("noise"));
+}
+
+void TestFramer::bufferCapFlushes()
+{
+    // 缓冲上限：>1MB 无换行无标记数据冲刷为帧并清空（防内存 DoS），
+    // 清空后分帧与标记识别恢复正常
+    MarkerFramer f = makeFramer();
+    const QByteArray big(2 * 1024 * 1024, 'a');
+    auto r = f.feed(big);
+    QVERIFY(!r.markerFound);
+    QCOMPARE(r.frames.size(), 1);
+    QCOMPARE(r.frames[0].size(), big.size());
+
+    r = f.feed(QByteArray("ok\n") + FULL + "\n");
+    QVERIFY(r.markerFound);
+    QCOMPARE(r.frames.size(), 1);
+    QCOMPARE(r.frames[0], QByteArray("ok"));
 }
 
 QTEST_APPLESS_MAIN(TestFramer)

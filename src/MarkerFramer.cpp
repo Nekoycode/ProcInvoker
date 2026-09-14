@@ -1,5 +1,11 @@
 #include "MarkerFramer.h"
 
+namespace {
+// 缓冲上限：无换行/无标记残余超过 1MB 时冲刷为帧并清空（防内存 DoS；
+// 与 PromptFramer 的 kMaxTailBuffer 同构，接受牺牲跨分片部分标记的权衡）
+constexpr int kMaxBuffer = 1024 * 1024;
+} // namespace
+
 static bool isDigit(char c)
 {
     return c >= '0' && c <= '9';
@@ -44,6 +50,10 @@ MarkerFramer::FeedResult MarkerFramer::feed(const QByteArray &data)
         if (baseIdx < 0) {
             // 保留未完成部分：可能是半行，也可能含有跨缓冲区的标记前缀
             m_buffer = m_buffer.mid(lineStart);
+            if (m_buffer.size() > kMaxBuffer) { // 超上限：冲刷为帧并清空
+                out.frames.append(m_buffer);
+                m_buffer.clear();
+            }
             return out;
         }
 
@@ -58,6 +68,10 @@ MarkerFramer::FeedResult MarkerFramer::feed(const QByteArray &data)
             // token 到达缓冲末尾但可能尚未完整（后续还可能跟数字），
             // 且是期望标记的真前缀：保留等待后续分片
             m_buffer = m_buffer.mid(lineStart);
+            if (m_buffer.size() > kMaxBuffer) { // 超上限：牺牲部分标记，冲刷为帧并清空
+                out.frames.append(m_buffer);
+                m_buffer.clear();
+            }
             return out;
         }
 
