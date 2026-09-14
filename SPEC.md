@@ -196,6 +196,7 @@ examples/calc.tcl           # 演示用被调 Tcl 程序（source calc_procs.tcl
 examples/calc_procs.tcl     # 演示命令集（calc.tcl 与 embedded_host 共用）
 examples/embedded_host.c    # 嵌入式 Tcl 宿主示例（形态 B，需 tcl 开发包）
 examples/tcl_demo.cpp       # 端到端示例（--embedded 切换被调方为 embedded_host）
+examples/batch_demo.cpp     # 企业批量执行示例（依赖链 + 逐条处理 + 失败中止）
 ```
 
 ## 演进方向（已识别，未实现，勿提前抽象）

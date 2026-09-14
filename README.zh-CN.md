@@ -65,6 +65,10 @@ $ ./build/examples/tcl_demo
 
 `./build/examples/tcl_demo --embedded` 用**同一套**命令驱动 `examples/embedded_host.c`——一个内嵌 `Tcl_Interp` 的 C 程序——输出逐字节一致。调用器无法区分两者。
 
+### 带依赖的批量任务
+
+`./build/examples/batch_demo` 演示企业批量执行模式：步骤声明式定义、严格按序执行，**后续步骤的命令文本可由前序步骤解析出的结果构造**——做法就是在前一条命令的 `onResult` 里解析输出并注册下一条（天然安全：回调在你的线程执行、队列 FIFO）。任一步骤可否决整个批次（解析失败、状态异常）并以非零码中止。`./build/examples/batch_demo --fail` 演示中止路径（含稍晚到达的 stderr 错误明细）。
+
 ## 工作原理
 
 ```
@@ -211,7 +215,7 @@ include/procinvoker/ProcInvoker.h   # 公开 API
 src/                                # ProcInvoker 入口 · ProcInvokerCore · MarkerFramer · PromptFramer
 cmake/ProcInvokerConfig.cmake.in    # 包配置模板（install/export）
 tests/                              # fixture 子进程 · 78 个单元与集成测试（ctest）
-examples/                           # calc.tcl · calc_procs.tcl · embedded_host.c · tcl_demo.cpp
+examples/                           # calc.tcl · calc_procs.tcl · embedded_host.c · tcl_demo.cpp · batch_demo.cpp
 SPEC.md                             # 设计契约（定稿决策、演进方向）
 CHANGELOG.md                        # 发布历史（Keep a Changelog）
 ```

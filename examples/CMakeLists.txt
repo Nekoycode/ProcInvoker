@@ -5,6 +5,13 @@ target_compile_definitions(tcl_demo PRIVATE
     CALC_PROCS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/calc_procs.tcl"
 )
 
+# 企业批量命令执行示例（依赖链 + 逐条处理 + 失败中止）
+add_executable(batch_demo batch_demo.cpp)
+target_link_libraries(batch_demo PRIVATE procinvoker Qt5::Core)
+target_compile_definitions(batch_demo PRIVATE
+    CALC_TCL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/calc.tcl"
+)
+
 # 嵌入式 Tcl 宿主示例（需要 tcl 开发包，如 apt install tcl-dev）
 find_package(TCL)
 if(TCL_FOUND)

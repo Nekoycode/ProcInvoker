@@ -3,6 +3,14 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- `examples/batch_demo.cpp`：企业批量命令执行示例——步骤声明式定义、严格按序执行，
+  后续步骤的命令可由前序步骤解析出的结果构造（在 `onResult` 中链式注册），
+  任一步骤可中止整个批次；`--fail` 演示中止路径
+
 ## [1.0.0] - 2026-09-07
 
 首个发布版本。

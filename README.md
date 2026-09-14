@@ -65,6 +65,10 @@ $ ./build/examples/tcl_demo
 
 `./build/examples/tcl_demo --embedded` runs the **same** commands against `examples/embedded_host.c` — a C program with an embedded `Tcl_Interp` — with byte-identical output. The caller cannot tell the difference.
 
+### Batch jobs with dependencies
+
+`./build/examples/batch_demo` shows the enterprise batch pattern: steps are declared up front, executed strictly in order, and **a step's command text can be built from parsed results of previous steps** — the next command is simply registered inside the previous one's `onResult` (safe: callbacks run on your thread, the queue is FIFO). Any step may veto the batch (parse failure, bad status) and abort it with a non-zero exit code. `./build/examples/batch_demo --fail` demonstrates the abort path including late stderr diagnostics.
+
 ## How It Works
 
 ```
@@ -208,7 +212,7 @@ include/procinvoker/ProcInvoker.h   # public API
 src/                                # ProcInvoker entry · ProcInvokerCore · MarkerFramer · PromptFramer
 cmake/ProcInvokerConfig.cmake.in    # package config template (install/export)
 tests/                              # fixture child process · 78 unit & integration tests (ctest)
-examples/                           # calc.tcl · calc_procs.tcl · embedded_host.c · tcl_demo.cpp
+examples/                           # calc.tcl · calc_procs.tcl · embedded_host.c · tcl_demo.cpp · batch_demo.cpp
 SPEC.md                             # design contract (pinned decisions, evolution directions)
 CHANGELOG.md                        # release history (Keep a Changelog)
 ```
